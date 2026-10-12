@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+src/*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Testing and linting
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Local development files
+experiments/
+.local/
+AGENTS.md
+
+# Logs
+*.log
+
+# macOS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
