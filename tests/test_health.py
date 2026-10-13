@@ -1,10 +1,17 @@
+"""Tests for application health check endpoints."""
+
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maintainer_lens.main import app
+from maintainer_lens.api.router import router as api_router
 
 
 def test_health_liveness() -> None:
-    with TestClient(app) as client:
+    """Verify that the liveness endpoint returns a successful response."""
+    test_app = FastAPI()
+    test_app.include_router(api_router)
+
+    with TestClient(test_app) as client:
         response = client.get("/health/live")
 
     assert response.status_code == 200
