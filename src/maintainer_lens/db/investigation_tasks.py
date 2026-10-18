@@ -1,0 +1,167 @@
+from datetime import timedelta
+from uuid import uuid4
+
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from maintainer_lens.db.models.investigation import InvestigationTask
+
+LEASE_DURATION = timedelta(minutes=15)
+
+
+async def create_investigation_task(
+    session: AsyncSession,
+    task_id: str,
+    repository: str,
+    issue_number: int,
+) -> InvestigationTask:
+    """Create a pending investigation task."""
+    task = InvestigationTask(
+        id=task_id,
+        repository=repository,
+        issue_number=issue_number,
+    )
+    session.add(task)
+    await session.flush()
+    return task
+
+
+async def claim_investigation_task(
+    session: AsyncSession,
+    task_id: str,
+) -> str | None:
+    """Atomically claim a pending or expired investigation task."""
+    claim_token = uuid4().hex
+
+    expired_running = and_(
+        InvestigationTask.status == "running",
+        InvestigationTask.lease_expires_at <= func.statement_timestamp(),
+    )
+
+    claimable = or_(
+        InvestigationTask.status == "pending",
+        expired_running,
+    )
+    stmt = (
+        update(InvestigationTask)
+        .where(
+            InvestigationTask.id == task_id,
+            claimable,
+        )
+        .values(
+            status="running",
+            claim_token=claim_token,
+            lease_expires_at=func.statement_timestamp() + LEASE_DURATION,
+        )
+        .returning(InvestigationTask.claim_token)
+    )
+    result = await session.execute(stmt)
+    claim_token = result.scalar_one_or_none()
+    return claim_token
+
+
+async def mark_investigation_succeeded(
+    session: AsyncSession,
+    task_id: str,
+    claim_token: str,
+) -> bool:
+    """Mark an investigation as succeeded if the claim is still valid."""
+    stmt = (
+        update(InvestigationTask)
+        .where(
+            InvestigationTask.id == task_id,
+            InvestigationTask.status == "running",
+            InvestigationTask.claim_token == claim_token,
+            InvestigationTask.lease_expires_at > func.statement_timestamp(),
+        )
+        .values(
+            status="succeeded",
+            claim_token=None,
+            lease_expires_at=None,
+        )
+        .returning(InvestigationTask.id)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
+
+
+async def mark_investigation_failed(
+    session: AsyncSession,
+    task_id: str,
+    claim_token: str,
+) -> bool:
+    """Atomically mark a running investigation task as failed."""
+    stmt = (
+        update(InvestigationTask)
+        .where(
+            InvestigationTask.id == task_id,
+            InvestigationTask.status == "running",
+            InvestigationTask.claim_token == claim_token,
+            InvestigationTask.lease_expires_at > func.statement_timestamp(),
+        )
+        .values(
+            status="failed",
+            claim_token=None,
+            lease_expires_at=None,
+        )
+        .returning(InvestigationTask.id)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
+
+
+async def renew_investigation_lease(
+    session: AsyncSession,
+    task_id: str,
+    claim_token: str,
+) -> bool:
+    """Extend an active investigation lease owned by the current worker."""
+    stmt = (
+        update(InvestigationTask)
+        .where(
+            InvestigationTask.id == task_id,
+            InvestigationTask.status == "running",
+            InvestigationTask.claim_token == claim_token,
+            InvestigationTask.lease_expires_at > func.statement_timestamp(),
+        )
+        .values(
+            lease_expires_at=func.statement_timestamp() + LEASE_DURATION,
+        )
+        .returning(InvestigationTask.id)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
+
+
+async def get_investigation_task_status(
+    session: AsyncSession,
+    task_id: str,
+) -> str | None:
+    """Return the persisted status of an investigation task."""
+    stmt = select(InvestigationTask.status).where(InvestigationTask.id == task_id)
+    return await session.scalar(stmt)
+
+
+async def release_investigation_task_for_retry(
+    session: AsyncSession,
+    task_id: str,
+    claim_token: str,
+) -> bool:
+    """Release an active investigation claim for a future retry."""
+    stmt = (
+        update(InvestigationTask)
+        .where(
+            InvestigationTask.id == task_id,
+            InvestigationTask.status == "running",
+            InvestigationTask.claim_token == claim_token,
+            InvestigationTask.lease_expires_at > func.statement_timestamp(),
+        )
+        .values(
+            status="pending",
+            claim_token=None,
+            lease_expires_at=None,
+        )
+        .returning(InvestigationTask.id)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None

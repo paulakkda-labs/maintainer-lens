@@ -9,7 +9,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from maintainer_lens.core.config import get_settings
-from maintainer_lens.db.base import Base
+from maintainer_lens.db.models import Base
 
 config = context.config
 
