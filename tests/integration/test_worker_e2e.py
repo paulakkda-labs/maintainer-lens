@@ -201,7 +201,7 @@ def start_test_consumer(
     broker: BrokerResources,
     session_factory: async_sessionmaker[AsyncSession],
     investigate: Callable[
-        [InvestigationRequestedMessage],
+        [InvestigationRequestedMessage, str],
         Awaitable[None],
     ],
 ) -> tuple[asyncio.Task[None], list[AbstractIncomingMessage]]:
@@ -265,7 +265,10 @@ async def test_successful_investigation_e2e(
     """Complete and acknowledge a successful investigation."""
     calls: list[InvestigationRequestedMessage] = []
 
-    async def investigate(request: InvestigationRequestedMessage) -> None:
+    async def investigate(
+        request: InvestigationRequestedMessage,
+        _claim_token: str,
+    ) -> None:
         calls.append(request)
 
     task, deliveries = start_test_consumer(
@@ -300,7 +303,10 @@ async def test_retry_then_success_e2e(
     """Retry a temporary failure and complete on the second delivery."""
     attempts = 0
 
-    async def investigate(request: InvestigationRequestedMessage) -> None:
+    async def investigate(
+        request: InvestigationRequestedMessage,
+        _claim_token: str,
+    ) -> None:
         nonlocal attempts
 
         attempts += 1
@@ -341,7 +347,10 @@ async def test_final_failure_dead_letters_e2e(
 ) -> None:
     """Persist final failure and publish its message to the dead queue."""
 
-    async def investigate(request: InvestigationRequestedMessage) -> None:
+    async def investigate(
+        request: InvestigationRequestedMessage,
+        _claim_token: str,
+    ) -> None:
         raise RetryableInvestigationError("GitHub remains unavailable")
 
     task, deliveries = start_test_consumer(
@@ -388,7 +397,10 @@ async def test_publish_failure_preserves_original_message_e2e(
 ) -> None:
     """Keep the original delivery unacked when retry publication fails."""
 
-    async def investigate(request: InvestigationRequestedMessage) -> None:
+    async def investigate(
+        request: InvestigationRequestedMessage,
+        _claim_token: str,
+    ) -> None:
         raise RetryableInvestigationError("Temporary GitHub failure")
 
     class FailingExchange:

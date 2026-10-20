@@ -247,8 +247,19 @@ async def test_lifespan_cleans_up_when_topology_declaration_fails():
     rabbitmq_channel.close = AsyncMock()
 
     rabbitmq_connection.channel = AsyncMock(return_value=rabbitmq_channel)
+    settings = SimpleNamespace(
+        database_url=SecretStr(
+            "postgresql+asyncpg://test:password@localhost:5432/test_db"
+        ),
+        redis_url=SecretStr("redis://:password@localhost:6379/0"),
+        rabbitmq_url=SecretStr("amqp://guest:guest@localhost:5672/test"),
+    )
 
     with (
+        patch(
+            "maintainer_lens.main.get_settings",
+            return_value=settings,
+        ),
         patch(
             "maintainer_lens.main.create_db_engine",
             return_value=engine,

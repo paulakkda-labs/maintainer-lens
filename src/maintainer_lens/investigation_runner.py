@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,8 +26,14 @@ class InvestigationClaimUnavailableError(RuntimeError):
     """Raised when an investigation task cannot be claimed."""
 
 
-class RetryableInvestigationError(RuntimeError):
-    """Raised when an investigation can be retried."""
+class RetryableInvestigationError(Exception):
+    """An investigation failure that may be retried."""
+
+    not_before: datetime | None = None
+
+
+class PermanentInvestigationError(Exception):
+    """An investigation failure that must not be retried."""
 
 
 async def maintain_investigation_lease(
@@ -96,7 +103,7 @@ async def run_investigation_with_lease(
 async def execute_investigation_task(
     session_factory: async_sessionmaker[AsyncSession],
     task_id: str,
-    processor: Callable[[], Awaitable[None]],
+    processor: Callable[[str], Awaitable[None]],
     final_attempt: bool = False,
 ) -> None:
     """Claim, execute, and complete an investigation task."""
@@ -112,15 +119,20 @@ async def execute_investigation_task(
             "Investigation task cannot be claimed."
         )
 
-    retry_error: RetryableInvestigationError | None = None
+    processing_error: (
+        RetryableInvestigationError | PermanentInvestigationError | None
+    ) = None
 
     async def guarded_processor() -> None:
-        nonlocal retry_error
+        nonlocal processing_error
 
         try:
-            await processor()
-        except RetryableInvestigationError as exc:
-            retry_error = exc
+            await processor(claim_token)
+        except (
+            RetryableInvestigationError,
+            PermanentInvestigationError,
+        ) as exc:
+            processing_error = exc
 
     await run_investigation_with_lease(
         session_factory=session_factory,
@@ -129,10 +141,13 @@ async def execute_investigation_task(
         processor=guarded_processor,
     )
 
-    if retry_error is not None:
+    if processing_error is not None:
         async with session_factory() as session:
             async with session.begin():
-                if final_attempt:
+                if final_attempt or isinstance(
+                    processing_error,
+                    PermanentInvestigationError,
+                ):
                     changed = await mark_investigation_failed(
                         session=session,
                         task_id=task_id,
@@ -149,7 +164,7 @@ async def execute_investigation_task(
             raise LeaseLostError(
                 f"Cannot update investigation with an invalid lease: {task_id}"
             )
-        raise retry_error
+        raise processing_error
 
     async with session_factory() as session:
         async with session.begin():

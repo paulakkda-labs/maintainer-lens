@@ -1,9 +1,11 @@
 """Entry point and lifecycle management for the investigation worker."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 
+import httpx
 from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractRobustExchange,
@@ -25,6 +27,7 @@ from maintainer_lens.messaging.topology import (
     QUEUE_NAME,
     declare_investigation_topology,
 )
+from maintainer_lens.services.issue_investigator import investigate_issue
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,7 @@ def build_investigation_message_handler(
     session_factory: async_sessionmaker[AsyncSession],
     exchange: AbstractRobustExchange,
     investigate: Callable[
-        [InvestigationRequestedMessage],
+        [InvestigationRequestedMessage, str],
         Awaitable[None],
     ],
 ) -> Callable[[AbstractIncomingMessage], Awaitable[None]]:
@@ -46,7 +49,10 @@ def build_investigation_message_handler(
         await process_investigation_request(
             request=request,
             session_factory=session_factory,
-            processor=lambda: investigate(request),
+            processor=lambda claim_token: investigate(
+                request,
+                claim_token,
+            ),
             final_attempt=final_attempt,
         )
 
@@ -87,11 +93,13 @@ async def run_investigation_consumer(
 
 async def run_worker(
     investigate: Callable[
-        [InvestigationRequestedMessage],
+        [InvestigationRequestedMessage, str],
         Awaitable[None],
-    ],
+    ]
+    | None = None,
 ) -> None:
-    """Start the investigation worker and manage its resources."""
+    """Start the worker and manage its investigation dependencies."""
+
     settings = get_settings()
 
     async with AsyncExitStack() as stack:
@@ -99,6 +107,33 @@ async def run_worker(
         stack.push_async_callback(engine.dispose)
 
         session_factory = create_session_factory(engine)
+
+        if investigate is None:
+            http_client = await stack.enter_async_context(
+                httpx.AsyncClient(
+                    timeout=httpx.Timeout(15.0),
+                    limits=httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=10,
+                    ),
+                    follow_redirects=True,
+                )
+            )
+
+            async def production_investigate(
+                request: InvestigationRequestedMessage,
+                claim_token: str,
+            ) -> None:
+                await investigate_issue(
+                    http_client=http_client,
+                    session_factory=session_factory,
+                    task_id=request.task_id,
+                    claim_token=claim_token,
+                    repository=request.repository,
+                    issue_number=request.issue_number,
+                )
+
+            investigate = production_investigate
 
         connection = await create_rabbitmq_connection(
             settings.rabbitmq_url.get_secret_value()
@@ -116,9 +151,7 @@ async def run_worker(
         )
         stack.push_async_callback(publisher_channel.close)
 
-        exchange = await declare_investigation_topology(
-            publisher_channel,
-        )
+        exchange = await declare_investigation_topology(publisher_channel)
 
         queue = await consumer_channel.get_queue(
             QUEUE_NAME,
@@ -138,9 +171,9 @@ async def run_worker(
         )
 
 
-# if __name__ == "__main__":
-#     logging.basicConfig(
-#         level=logging.INFO,
-#         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-#     )
-#     asyncio.run(run_worker(investigate=investigate_issue))
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    asyncio.run(run_worker())

@@ -1,4 +1,4 @@
-"""Integration tests for investigation task execution."""
+"""Integration tests for investigation task execution and lease handling."""
 
 import asyncio
 import os
@@ -29,7 +29,7 @@ async def test_successful_investigation_is_persisted(
 
     processor_called = False
 
-    async def processor() -> None:
+    async def processor(_claim_token: str) -> None:
         nonlocal processor_called
         processor_called = True
 
@@ -78,7 +78,7 @@ async def test_unavailable_claim_does_not_start_processor(
 
     processor_called = False
 
-    async def processor() -> None:
+    async def processor(_claim_token: str) -> None:
         nonlocal processor_called
         processor_called = True
 
@@ -105,7 +105,7 @@ async def test_processor_failure_does_not_mark_success(
     """Leave the task unfinished when investigation processing fails."""
     session_factory, task_id, _ = investigation_task
 
-    async def processor() -> None:
+    async def processor(_claim_token: str) -> None:
         raise ValueError("Simulated investigation failure")
 
     with pytest.raises(ExceptionGroup) as exc_info:
@@ -132,7 +132,7 @@ async def test_expired_lease_prevents_final_completion(
     """Reject completion when the investigation lease has expired."""
     session_factory, task_id, _ = investigation_task
 
-    async def processor() -> None:
+    async def processor(_claim_token: str) -> None:
         # Simulate lease expiration immediately before completion.
         async with session_factory() as session:
             async with session.begin():
@@ -168,7 +168,7 @@ async def test_lease_loss_cancels_processor(
     processor_started = asyncio.Event()
     processor_cancelled = asyncio.Event()
 
-    async def processor() -> None:
+    async def processor(_claim_token: str) -> None:
         processor_started.set()
 
         try:
@@ -235,7 +235,7 @@ async def test_final_commit_failure_does_not_report_success(
         if commit_count == 2:
             raise RuntimeError("Simulated commit failure")
 
-    async def processor() -> None:
+    async def processor(_claim_token: str) -> None:
         return
 
     event.listen(

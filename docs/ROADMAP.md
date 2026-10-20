@@ -1,155 +1,206 @@
 # MaintainerLens Roadmap
 
-MaintainerLens is an evidence-driven, multi-agent platform for investigating
-GitHub issues using repository code, documentation, and development history.
+MaintainerLens is an evidence-driven GitHub issue investigation platform. The
+long-term goal is a reliable, server-side, multi-agent system grounded in
+repository code, documentation, issues, and pull-request history.
 
-> This roadmap describes planned capabilities. Features are not considered
-> available until implemented, tested, and documented.
+> This document distinguishes implemented capabilities from planned work.
+> Passing local unit tests does not imply that opt-in integration tests or
+> deployment checks have run.
 
-## Version 1 — Public Repository Investigation
+## Milestone overview
 
-V1 focuses on investigating issues in public GitHub repositories.
+| Milestone | Scope | Status |
+| --- | --- | --- |
+| M0 | Project bootstrap | **Completed** |
+| M1-1 | PostgreSQL, Redis, RabbitMQ infrastructure | **Completed** |
+| M1-2 | SQLAlchemy Async and Alembic foundation | **Completed** |
+| M1-3 | Async Redis integration | **Completed** |
+| M1-4 | RabbitMQ and reliable worker foundation | **Completed and merged** |
+| M1-5 | GitHub Actions continuous integration | **Implemented locally; first GitHub Actions run pending** |
+| M2 | Public GitHub Issue ingestion, outbox, API, Docker packaging | **Implementation and Docker E2E verified; PR pending** |
+| M3 | Repository knowledge and RAG | Planned |
+| M4 | Multi-agent investigation | Planned |
+| M5 | Memory and human-in-the-loop | Planned |
+| M6 | V1 release readiness | Planned |
 
-### M0 — Project Bootstrap
+M1-5 is being completed within the current M2 feature branch, **before M2
+merges**. CI is configured, but it must run successfully on GitHub before
+M1-5 is marked complete. The original milestone number is kept for traceability.
 
-- [x] Initialize the Python project with uv.
-- [x] Establish the FastAPI application.
-- [x] Add the initial health check and automated test.
-- [x] Configure Ruff.
-- [x] Establish the Git repository and development workflow.
+## V1 — Public Repository Investigation
+
+V1 initially supports GitHub **public** repositories and read-only
+investigation. Private repositories and GitHub write operations are V2 scope.
+
+### M0 — Project Bootstrap — Completed
+
+- [x] Initialize the Python/uv project using a `src` layout.
+- [x] Establish FastAPI, a liveness endpoint, pytest, and Ruff.
+- [x] Adopt Apache-2.0 licensing and a pull-request/squash-merge workflow.
+- [x] Establish the initial roadmap and Git repository.
 
 ### M1 — Backend Infrastructure
 
-Build the infrastructure required for reliable asynchronous investigation
-processing.
+#### M1-1 — Local Infrastructure — Completed
 
-#### M1-1 — Local Infrastructure
+- [x] Provide PostgreSQL 17 with pgvector, Redis 7.4, and RabbitMQ 4.2.
+- [x] Provide persistent named volumes and infrastructure health checks.
+- [x] Bind development service ports to `127.0.0.1`.
+- [x] Verify initial database, Redis, and RabbitMQ connectivity.
 
-**Status: Completed**
+#### M1-2 — PostgreSQL Foundation — Completed
 
-- [x] Configure Docker Compose.
-- [x] Deploy PostgreSQL 17 with pgvector.
-- [x] Deploy Redis 7.4.
-- [x] Deploy RabbitMQ 4.2 with Management.
-- [x] Configure persistent volumes and health checks.
-- [x] Restrict development service ports to localhost.
-- [x] Verify database, cache, and message broker connectivity.
+- [x] Integrate SQLAlchemy Async engines, sessions, and transaction boundaries.
+- [x] Configure Alembic migrations and database models.
+- [x] Test persistence, rollback, and important database constraints.
 
-#### M1-2 — PostgreSQL and Database Foundation
+#### M1-3 — Redis Integration — Completed
 
-**Status: Completed**
+- [x] Configure the asynchronous Redis client and resource lifecycle.
+- [x] Verify Redis connectivity and operations.
+- [x] Merge the Redis integration pull request.
 
-- [x] Integrate SQLAlchemy Async.
-- [x] Configure asynchronous database connections and sessions.
-- [x] Configure Alembic migrations.
-- [x] Establish database models and persistence operations.
-- [x] Verify database operations and transaction behavior.
+#### M1-4 — RabbitMQ and Worker Foundation — Completed and merged
 
-#### M1-3 — Redis Integration
+- [x] Configure durable RabbitMQ exchange/queue topology.
+- [x] Add persistent messages, mandatory routing, publisher confirms, and ACKs.
+- [x] Implement delayed retry queues and dead-letter handling.
+- [x] Persist investigation tasks and enforce state transitions.
+- [x] Implement atomic claims, ownership tokens, leases, and lease renewal.
+- [x] Protect task finalization against stale workers.
+- [x] Implement retryable execution and bounded terminal failure behavior.
+- [x] Validate core success, retry, dead-letter, and ACK paths with real
+      PostgreSQL and RabbitMQ integration tests.
+- [x] Review and merge the M1-4 pull request.
 
-**Status: Completed**
+#### M1-5 — Continuous Integration — Completed and merged
 
-- [x] Integrate the asynchronous Redis client.
-- [x] Configure Redis connection management.
-- [x] Integrate Redis into the application lifecycle.
-- [x] Verify Redis connectivity and basic operations.
+The workflow is defined in `.github/workflows/ci.yml`. Its first real
+GitHub-hosted run is still required before this milestone is completed.
 
-#### M1-4 — RabbitMQ and Worker Foundation
+- [x] Configure GitHub Actions for feature branch pushes, pull requests,
+      updates to `main`, and manual dispatch.
+- [x] Add Python 3.12 and locked `uv` dependency installation.
+- [x] Configure Ruff lint and formatting checks.
+- [x] Configure the default pytest suite and Python distribution build.
+- [x] Configure a separate integration job with disposable PostgreSQL
+      (pgvector), Redis, and RabbitMQ service containers.
+- [x] Configure Alembic migrations, FastAPI lifespan/liveness startup check,
+      and opt-in PostgreSQL/RabbitMQ/Worker end-to-end tests.
+- [x] Document CI setup and validation in the README.
+- [x] Confirm **both jobs green** on GitHub Actions using the M2 feature branch.
 
-**Status: Implementation and end-to-end validation completed; PR pending**
+All CI database and broker credentials are confined to disposable containers;
+no repository secrets or production infrastructure are needed for these tests.
 
-- [x] Implement RabbitMQ connection management.
-- [x] Configure durable exchanges and queues.
-- [x] Implement persistent message publishing.
-- [x] Enable publisher confirms and mandatory routing.
-- [x] Implement asynchronous message consumption and acknowledgements.
-- [x] Implement delayed retry and dead-letter queues.
-- [x] Implement investigation task persistence and state transitions.
-- [x] Implement atomic task claiming with claim tokens.
-- [x] Implement lease expiration, renewal, and ownership validation.
-- [x] Implement retryable investigation execution.
-- [x] Implement bounded retry attempts and terminal failure handling.
-- [x] Establish worker dependency wiring and resource management.
-- [x] Add unit and integration tests.
-- [x] Validate success, retry, dead-letter, and acknowledgement behavior
-      with real PostgreSQL and RabbitMQ.
-- [x] Complete code review and merge the M1-4 pull request.
+### M2 — Public GitHub Issue Ingestion and Reliable Delivery
 
-The worker foundation supports dependency injection of investigation
-processors. The standalone production worker entry point will be enabled
-when the initial investigation processor is implemented in M2.
+**Status: Implemented and verified with a Docker-hosted end-to-end public Issue
+investigation. CI validation and PR merge remain outstanding.**
 
-#### M1-5 — Continuous Integration
+This milestone delivers a complete **public-Issue snapshot** vertical slice,
+not repository indexing or agent-generated investigation reports.
 
-**Status: Planned**
+#### GitHub ingestion and task execution
 
-- [ ] Configure GitHub Actions.
-- [ ] Run Ruff lint and formatting checks in CI.
-- [ ] Run automated tests in CI.
-- [ ] Verify package installation and application startup.
-- [ ] Document the CI workflow.
+- [x] Implement a typed GitHub REST API Issue client and reject PR objects.
+- [x] Manage shared async HTTPX clients, timeouts, HTTP error classification,
+      and GitHub primary/secondary rate-limit cases.
+- [x] Apply bounded retries, delayed retry/dead-letter routing, and
+      per-message `not_before` behavior.
+- [x] Save GitHub Issue snapshots with traceable source URLs and timestamps.
+- [x] Require the active claim token and valid lease before snapshot writes.
+- [x] Connect the production Worker entry point to the Issue investigator.
 
-### M2 — GitHub Integration
+#### Transactional Outbox and HTTP API
 
-- [ ] Integrate the GitHub REST API.
-- [ ] Retrieve public repositories, issues, and pull requests.
-- [ ] Implement GitHub API authentication and rate-limit handling.
-- [ ] Implement asynchronous requests, timeouts, and error classification.
-- [ ] Fetch repository source code and documentation.
-- [ ] Persist retrieved investigation data.
-- [ ] Implement the initial investigation processor.
-- [ ] Connect the investigation processor to the worker entry point.
+- [x] Atomically create the investigation task and outbox event in PostgreSQL.
+- [x] Claim unpublished outbox events using row locking and delivery leases.
+- [x] Publish with RabbitMQ confirms; mark published only after confirmation.
+- [x] Handle failed publication with safe claim release/retry delays.
+- [x] Run an independent outbox dispatcher.
+- [x] Implement `POST /investigations` (HTTP 202).
+- [x] Implement `GET /investigations/{task_id}` with status and optional snapshot.
+- [x] Verify a live end-to-end Issue request through local Python processes,
+      real PostgreSQL, RabbitMQ, and the GitHub API.
 
-### M3 — Repository Knowledge and RAG
+#### Packaging, testing, and delivery
 
-- [ ] Build a repository indexing pipeline.
-- [ ] Implement code and document chunking.
-- [ ] Integrate embeddings and pgvector.
-- [ ] Implement retrieval with traceable source references.
-- [ ] Evaluate retrieval quality.
+- [x] Add a shared application Docker image and separate API, dispatcher,
+      and worker Compose services.
+- [x] Add a one-shot Alembic migration service with startup dependencies.
+- [x] Preserve existing PostgreSQL/Redis/RabbitMQ named volumes and localhost
+      port bindings.
+- [x] Successfully build/start the stack on a Docker-capable Mac: infrastructure
+      and API healthy, dispatcher/worker running, migration job exited with 0.
+- [x] Resolve the original RabbitMQ vhost mismatch by using `RABBITMQ_VHOST`
+      consistently in Compose and existing environment configuration.
+- [x] Split the oversized worker integration test module by responsibility.
+- [x] Re-run Ruff and default pytest after refactoring: **128 passed,
+      41 skipped** (opt-in integration tests not included in this count).
+- [x] Document installation, lifecycle commands, diagnostics, and local tests.
+- [x] Confirm **Docker-hosted** HTTP → Outbox → RabbitMQ → Worker → GitHub →
+      Snapshot → HTTP success with `pydantic/pydantic` Issue #13781.
+- [ ] Confirm GitHub Actions quality and integration jobs pass.
+- [ ] Review the final diff and merge M2 via a squash-merge pull request.
+- [ ] Update the private/local project status after merge.
 
-### M4 — Multi-Agent Issue Investigation
+#### Outside this initial M2 slice
 
-- [ ] Build investigation workflows with LangGraph.
-- [ ] Implement specialized agents and tool calling.
-- [ ] Generate evidence-backed investigation reports.
-- [ ] Support asynchronous execution and progress tracking.
+- [ ] Support GitHub authentication/tokens and shared cross-worker rate limits.
+- [ ] Fetch and persist repository source, documentation, comments, and
+      relevant Issue/PR history for retrieval.
 
-### M5 — Memory and Human-in-the-Loop
+### M3 — Repository Knowledge and RAG — Planned
 
-- [ ] Persist investigation state and checkpoints.
-- [ ] Implement human feedback, interrupts, and workflow resumption.
-- [ ] Support short-term and long-term memory.
-- [ ] Add controls for storing and updating trusted project knowledge.
+- [ ] Implement source/document/history ingestion and indexing.
+- [ ] Design code-aware and document-aware chunking.
+- [ ] Generate embeddings and store/search them with pgvector.
+- [ ] Provide retrieval with source references and evidence provenance.
+- [ ] Evaluate retrieval accuracy and relevance on real issues.
 
-### M6 — V1 Release Readiness
+### M4 — Multi-Agent Issue Investigation — Planned
 
-- [ ] Establish an Agent evaluation dataset.
-- [ ] Add observability and reliability checks.
-- [ ] Review security and access controls.
-- [ ] Document deployment and configuration.
-- [ ] Publish English and Chinese documentation.
-- [ ] Prepare a reproducible public demo.
+- [ ] Implement LangGraph investigation workflows and specialized agents.
+- [ ] Introduce reliable tool calling and structured investigation outputs.
+- [ ] Produce reports with traceable claims and supporting evidence.
+- [ ] Support asynchronous execution, task progress, and failures.
 
-## Version 2 — Private Repository Support
+### M5 — Memory and Human-in-the-Loop — Planned
 
-Planned capabilities include:
+- [ ] Persist agent state and checkpoints for workflow resumption.
+- [ ] Support interrupts, reviewer feedback, and HITL approval.
+- [ ] Introduce short-term and long-term investigation memory.
+- [ ] Define trusted project knowledge update and retention policies.
 
-- GitHub App integration and authorization.
-- Private repository access.
-- Multi-user access control and data isolation.
+### M6 — V1 Release Readiness — Planned
+
+- [ ] Build representative issue-investigation and agent evaluation datasets.
+- [ ] Strengthen reliability, observability, and security boundaries.
+- [ ] Provide reproducible deployment and configuration documentation.
+- [ ] Publish English documentation and a Chinese README.
+- [ ] Prepare an end-to-end public demo.
+
+## V2 — Private Repository Support — Planned
+
+- GitHub App installation, authentication, and authorization.
+- Private repository access and multi-user data isolation.
 - Human-approved GitHub write operations.
 
 ## Non-goals
 
-MaintainerLens does not aim to replace IDE-based AI coding assistants.
-Automatic code editing and pull request generation are not V1 goals.
+MaintainerLens is not intended to replace Copilot, Cursor, Claude Code, or
+other IDE-based editing assistants. Automatic source editing and PR generation
+are not V1 goals. The focus is server-side investigation, evidence provenance,
+reviewable decisions, and knowledge accumulation.
 
-## Development Principles
+## Engineering principles
 
-- Prioritize correctness, security, and maintainability.
-- Keep implementation and documentation consistent.
-- Require automated tests for production features.
-- Make important agent decisions traceable and reviewable.
-- Evaluate agent quality against real-world GitHub issues.
-- Use feature branches, pull requests, and squash merges for development.
+- Prioritize correctness, maintainability, and clear transaction boundaries.
+- Keep production features covered by meaningful tests for risky paths:
+  concurrency, retries, leases, idempotency, and atomicity.
+- Do not conflate local unit tests with real integration/e2e coverage.
+- Document only behavior that has been implemented and verified.
+- Use feature branches, reviewed PRs, and squash merges; never push to `main`
+  directly.

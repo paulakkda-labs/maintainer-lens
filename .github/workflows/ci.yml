@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+      - "docs/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, unit tests, and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.1"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install project and development dependencies
+        run: uv sync --locked --dev
+
+      - name: Ruff lint
+        run: uv run --locked ruff check .
+
+      - name: Ruff format
+        run: uv run --locked ruff format --check .
+
+      - name: Default pytest suite
+        run: uv run --locked pytest -q
+
+      - name: Build wheel and source distribution
+        run: uv build --out-dir dist
+
+  integration:
+    name: Database, broker, and startup integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # These credentials exist only in disposable CI containers; no GitHub
+    # Secrets or production databases are used by integration tests.
+    env:
+      DATABASE_URL: postgresql+asyncpg://ci:ci_postgres_password@127.0.0.1:5432/maintainer_lens_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+      RABBITMQ_URL: amqp://ci:ci_rabbitmq_password@127.0.0.1:5672/maintainer_lens_ci
+      RUN_POSTGRES_INTEGRATION: "1"
+      RUN_RABBITMQ_INTEGRATION: "1"
+      RUN_WORKER_E2E: "1"
+
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci_postgres_password
+          POSTGRES_DB: maintainer_lens_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d maintainer_lens_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping | grep -q PONG"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      rabbitmq:
+        image: rabbitmq:4.2-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci_rabbitmq_password
+          RABBITMQ_DEFAULT_VHOST: maintainer_lens_ci
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 30s
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.1"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install project and development dependencies
+        run: uv sync --locked --dev
+
+      - name: Apply database migrations
+        run: uv run --locked alembic upgrade head
+
+      - name: Verify FastAPI startup and liveness
+        run: |
+          uv run --locked python - <<'PY'
+          from fastapi.testclient import TestClient
+          from maintainer_lens.main import app
+
+          with TestClient(app) as client:
+              response = client.get("/health/live")
+              assert response.status_code == 200, response.text
+          PY
+
+      - name: Run real PostgreSQL and RabbitMQ integration tests
+        run: uv run --locked pytest -q
