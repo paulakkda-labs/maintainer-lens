@@ -6,6 +6,7 @@ from aio_pika.abc import AbstractIncomingMessage, AbstractRobustExchange
 from maintainer_lens.messaging.schemas import (
     MISSING_TASK_CHECKS_HEADER,
     RETRY_ATTEMPTS_HEADER,
+    RETRY_NOT_BEFORE_HEADER,
     InvestigationRequestedMessage,
 )
 from maintainer_lens.messaging.topology import ROUTING_KEY
@@ -59,6 +60,7 @@ async def republish_investigation_message(
     routing_key: str,
     retry_attempts: int,
     missing_task_checks: int | None = None,
+    retry_not_before: str | None = None,
 ) -> None:
     """Republish an investigation message to another routing destination."""
     headers = {
@@ -67,6 +69,9 @@ async def republish_investigation_message(
 
     if missing_task_checks is not None:
         headers[MISSING_TASK_CHECKS_HEADER] = missing_task_checks
+
+    if retry_not_before is not None:
+        headers[RETRY_NOT_BEFORE_HEADER] = retry_not_before
 
     new_message = aio_pika.Message(
         body=incoming_message.body,

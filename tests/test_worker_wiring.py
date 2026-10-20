@@ -90,7 +90,7 @@ async def test_worker_passes_final_attempt(
         assert session_factory is expected_factory
 
         final_attempts.append(final_attempt)
-        await processor()
+        await processor("test-claim-token")
 
     expected_factory = session_factory
 
@@ -109,7 +109,10 @@ async def test_worker_passes_final_attempt(
 
     assert final_attempts == [expected_final]
 
-    investigate.assert_awaited_once_with(investigation_request)
+    investigate.assert_awaited_once_with(
+        investigation_request,
+        "test-claim-token",
+    )
     incoming_message.ack.assert_awaited_once()
 
 

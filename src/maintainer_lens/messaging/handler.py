@@ -1,6 +1,7 @@
 """Message handling for investigation requests."""
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustExchange
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from maintainer_lens.db.investigation_tasks import get_investigation_task_status
 from maintainer_lens.investigation_runner import (
     InvestigationClaimUnavailableError,
+    PermanentInvestigationError,
     RetryableInvestigationError,
     execute_investigation_task,
 )
@@ -15,6 +17,7 @@ from maintainer_lens.messaging.publisher import republish_investigation_message
 from maintainer_lens.messaging.schemas import (
     MISSING_TASK_CHECKS_HEADER,
     RETRY_ATTEMPTS_HEADER,
+    RETRY_NOT_BEFORE_HEADER,
     InvestigationRequestedMessage,
     parse_investigation_message,
 )
@@ -49,7 +52,7 @@ async def handle_investigation_message(
 async def process_investigation_request(
     request: InvestigationRequestedMessage,
     session_factory: async_sessionmaker[AsyncSession],
-    processor: Callable[[], Awaitable[None]],
+    processor: Callable[[str], Awaitable[None]],
     final_attempt: bool = False,
 ) -> None:
     """Execute an investigation or determine whether its message needs retrying."""
@@ -77,18 +80,66 @@ async def process_investigation_request(
         ) from exc
 
 
+def parse_retry_not_before(headers: dict) -> datetime | None:
+    """Parse the earliest permitted retry time from message headers."""
+
+    raw = headers.get(RETRY_NOT_BEFORE_HEADER)
+
+    if raw is None:
+        return None
+
+    if not isinstance(raw, str):
+        raise ValueError("Invalid retry deadline header")
+
+    try:
+        deadline = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError("Invalid retry deadline header") from exc
+
+    if deadline.tzinfo is None or deadline.utcoffset() is None:
+        raise ValueError("Retry deadline must include a timezone")
+
+    return deadline.astimezone(UTC)
+
+
 async def handle_investigation_message_with_retry(
     message: AbstractIncomingMessage,
     exchange: AbstractRobustExchange,
     processor: Callable[[InvestigationRequestedMessage, bool], Awaitable[None]],
 ) -> None:
-    """Dispatch an investigation message and reschedule unavailable tasks."""
+    """Dispatch investigation messages with retry and deadline handling."""
 
     headers = message.headers or {}
     retry_attempts = headers.get(RETRY_ATTEMPTS_HEADER, 0)
 
     if type(retry_attempts) is not int or retry_attempts < 0:
         raise ValueError("Invalid retry attempts header")
+
+    retry_not_before = headers.get(RETRY_NOT_BEFORE_HEADER)
+
+    if retry_not_before is not None:
+        if not isinstance(retry_not_before, str):
+            raise ValueError("Invalid retry deadline header")
+
+        try:
+            deadline = datetime.fromisoformat(retry_not_before)
+        except ValueError as exc:
+            raise ValueError("Invalid retry deadline header") from exc
+
+        if deadline.tzinfo is None or deadline.utcoffset() is None:
+            raise ValueError("Retry deadline must include a timezone")
+
+        deadline = deadline.astimezone(UTC)
+
+        if datetime.now(UTC) < deadline:
+            await republish_investigation_message(
+                exchange=exchange,
+                incoming_message=message,
+                routing_key=RETRY_ROUTING_KEY,
+                retry_attempts=retry_attempts,
+                retry_not_before=deadline.isoformat(),
+            )
+            return
 
     final_attempt = retry_attempts >= MAX_INVESTIGATION_RETRIES
 
@@ -138,14 +189,23 @@ async def handle_investigation_message_with_retry(
             missing_task_checks=missing_checks,
         )
 
-    except RetryableInvestigationError:
+    except RetryableInvestigationError as exc:
         if final_attempt:
             routing_key = DEAD_ROUTING_KEY
             next_attempts = retry_attempts
-
         else:
             routing_key = RETRY_ROUTING_KEY
             next_attempts = retry_attempts + 1
+
+        retry_options: dict[str, str] = {}
+
+        if routing_key == RETRY_ROUTING_KEY and exc.not_before is not None:
+            deadline = exc.not_before
+
+            if deadline.tzinfo is None or deadline.utcoffset() is None:
+                raise ValueError("Retry deadline must include a timezone") from exc
+
+            retry_options["retry_not_before"] = deadline.astimezone(UTC).isoformat()
 
         await republish_investigation_message(
             exchange=exchange,
@@ -153,4 +213,13 @@ async def handle_investigation_message_with_retry(
             routing_key=routing_key,
             retry_attempts=next_attempts,
             missing_task_checks=None,
+            **retry_options,
+        )
+
+    except PermanentInvestigationError:
+        await republish_investigation_message(
+            exchange=exchange,
+            incoming_message=message,
+            routing_key=DEAD_ROUTING_KEY,
+            retry_attempts=retry_attempts,
         )

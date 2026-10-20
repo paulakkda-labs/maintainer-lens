@@ -5,6 +5,10 @@ RETRY_ATTEMPTS_HEADER = "ml-retry-attempts"
 
 MISSING_TASK_CHECKS_HEADER = "ml-missing-task-checks"
 
+RETRY_NOT_BEFORE_HEADER = "ml-retry-not-before"
+
+INVESTIGATION_REQUESTED_EVENT_TYPE = "investigation.requested"
+
 
 class InvestigationRequestedMessage(BaseModel):
     """Validated payload for an investigation request."""

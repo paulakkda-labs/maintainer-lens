@@ -1,7 +1,19 @@
 name: maintainer-lens
 
+# Application connection strings use Docker service DNS names; host-mode
+# DATABASE_URL / REDIS_URL / RABBITMQ_URL in .env still use localhost.
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/${RABBITMQ_VHOST:?RABBITMQ_VHOST is required}
+
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
 services:
   postgres:
+    restart: unless-stopped
     image: pgvector/pgvector:0.8.6-pg17
 
     environment:
@@ -27,6 +39,7 @@ services:
       start_period: 10s
 
   redis:
+    restart: unless-stopped
     image: redis:7.4-alpine
 
     environment:
@@ -57,6 +70,7 @@ services:
       start_period: 5s
 
   rabbitmq:
+    restart: unless-stopped
     image: rabbitmq:4.2-management-alpine
     hostname: maintainer-lens-rabbitmq
 
@@ -78,6 +92,61 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # Runs migrations exactly as a one-off service, before API/worker startup.
+  migrate:
+    build: *app-build
+    image: maintainer-lens:dev
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: *app-build
+    image: maintainer-lens:dev
+    command: ["uvicorn", "maintainer_lens.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *app-env
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    depends_on: &app-dependencies
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  dispatcher:
+    build: *app-build
+    image: maintainer-lens:dev
+    command: ["python", "-m", "maintainer_lens.outbox_dispatcher"]
+    environment: *app-env
+    restart: unless-stopped
+    depends_on: *app-dependencies
+
+  worker:
+    build: *app-build
+    image: maintainer-lens:dev
+    command: ["python", "-m", "maintainer_lens.worker"]
+    environment: *app-env
+    restart: unless-stopped
+    depends_on: *app-dependencies
 
 volumes:
   postgres_data:
