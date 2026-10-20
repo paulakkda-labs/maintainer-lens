@@ -74,7 +74,7 @@ investigation. Private repositories and GitHub write operations are V2 scope.
       PostgreSQL and RabbitMQ integration tests.
 - [x] Review and merge the M1-4 pull request.
 
-#### M1-5 — Continuous Integration — Implemented, awaiting GitHub verification
+#### M1-5 — Continuous Integration — Completed and merged
 
 The workflow is defined in `.github/workflows/ci.yml`. Its first real
 GitHub-hosted run is still required before this milestone is completed.
@@ -89,7 +89,7 @@ GitHub-hosted run is still required before this milestone is completed.
 - [x] Configure Alembic migrations, FastAPI lifespan/liveness startup check,
       and opt-in PostgreSQL/RabbitMQ/Worker end-to-end tests.
 - [x] Document CI setup and validation in the README.
-- [ ] Confirm **both jobs green** on GitHub Actions using the M2 feature branch.
+- [x] Confirm **both jobs green** on GitHub Actions using the M2 feature branch.
 
 All CI database and broker credentials are confined to disposable containers;
 no repository secrets or production infrastructure are needed for these tests.
