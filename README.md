@@ -97,6 +97,34 @@ Compose-generated URLs using the internal DNS names `postgres`, `redis`, and
 `rabbitmq`. Use URI-safe credentials, or ensure reserved characters are encoded
 in connection URLs.
 
+### GitHub API authentication (optional)
+
+MaintainerLens supports an optional GitHub Personal Access Token (PAT) for accessing public repositories.
+
+Unauthenticated GitHub REST API requests are typically limited to 60 requests per hour per IP address. Authenticated requests typically have a primary rate limit of 5,000 requests per hour per user.
+
+To configure GitHub authentication:
+
+1. Create a fine-grained PAT at [GitHub Personal Access Tokens](https://github.com/settings/personal-access-tokens).
+2. For public repository access, no additional repository permissions are required.
+3. Add the token to your local `.env` file:
+
+   ```dotenv
+   GITHUB_TOKEN=your_github_personal_access_token
+   ```
+
+4. If using Docker, apply the configuration:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+The token is optional. Without it, public GitHub API requests use the unauthenticated rate limit.
+
+Never commit `.env` or expose tokens in source code, logs, or screenshots. The `.env.example` file documents the required configuration without containing real credentials.
+
+Production deployments should use a dedicated secret-management mechanism.
+
 ## Everyday Docker commands
 
 Run these from the repository root. Compose can be invoked repeatedly: it
@@ -255,7 +283,7 @@ request fails, inspect `docker compose logs -f api dispatcher worker`.
 - **Data:** `postgres_data`, `redis_data`, and `rabbitmq_data` are persistent
   named volumes. Never use `down -v` as a routine shutdown command.
 - **Current scope:** Public GitHub Issue retrieval and snapshot persistence.
-  Authentication, repository source indexing, RAG, multi-agent reports, HITL,
+  GitHub user authorization, repository source indexing, RAG, multi-agent reports, HITL,
   and shared cross-worker rate-limit coordination remain planned.
 
 This README is the **current development and operations guide**, not final

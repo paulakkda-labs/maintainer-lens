@@ -48,7 +48,8 @@ def test_missing_required_settings(
 
 
 def test_empty_optional_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify that empty optional settings fall back to None."""
+    """Verify that empty settings use their declared defaults."""
+
     optional_variables = [
         "LLM_BASE_URL",
         "LLM_MODEL_NAME",
@@ -63,10 +64,12 @@ def test_empty_optional_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 
     settings = Settings(_env_file=None)
 
+    # Optional LLM settings default to None.
     assert settings.llm_base_url is None
     assert settings.llm_model_name is None
     assert settings.llm_api_key is None
 
+    # Embedding provider settings have explicit defaults.
     assert settings.embedding_base_url is None
     assert settings.embedding_model is None
     assert settings.embedding_api_key is None
