@@ -144,7 +144,9 @@ services:
     build: *app-build
     image: maintainer-lens:dev
     command: ["python", "-m", "maintainer_lens.worker"]
-    environment: *app-env
+    environment:
+      <<: *app-env
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     restart: unless-stopped
     depends_on: *app-dependencies
 

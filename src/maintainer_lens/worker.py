@@ -5,7 +5,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 
-import httpx
 from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractRobustExchange,
@@ -13,6 +12,7 @@ from aio_pika.abc import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from maintainer_lens.clients.github_http import create_github_http_client
 from maintainer_lens.clients.rabbitmq import create_rabbitmq_connection
 from maintainer_lens.core.config import get_settings
 from maintainer_lens.db.engine import create_db_engine
@@ -110,14 +110,7 @@ async def run_worker(
 
         if investigate is None:
             http_client = await stack.enter_async_context(
-                httpx.AsyncClient(
-                    timeout=httpx.Timeout(15.0),
-                    limits=httpx.Limits(
-                        max_connections=20,
-                        max_keepalive_connections=10,
-                    ),
-                    follow_redirects=True,
-                )
+                create_github_http_client(settings.github_token)
             )
 
             async def production_investigate(

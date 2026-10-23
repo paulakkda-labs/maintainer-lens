@@ -14,9 +14,17 @@ dependencies = [
     "asyncpg>=0.32.0",
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
+    "markdown-it-py>=4.2.0",
+    "pgvector>=0.5.1",
     "pydantic-settings>=2.15.0",
     "redis>=8.1.0",
     "sqlalchemy[asyncio]>=2.1.4",
+    "tiktoken>=0.14.0",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-go>=0.25.0",
+    "tree-sitter-java>=0.23.5",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-typescript>=0.23.2",
     "uvicorn[standard]>=0.54.0",
 ]
 

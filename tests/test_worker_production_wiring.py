@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 import maintainer_lens.worker as worker
 from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
@@ -18,6 +19,7 @@ async def test_worker_wires_production_investigator(
     settings = MagicMock()
     settings.database_url.get_secret_value.return_value = "postgres-url"
     settings.rabbitmq_url.get_secret_value.return_value = "rabbitmq-url"
+    settings.github_token = SecretStr("fake-test-token")
 
     engine = MagicMock()
     engine.dispose = AsyncMock()
@@ -106,6 +108,7 @@ async def test_worker_wires_production_investigator(
 
     assert isinstance(http_client, httpx.AsyncClient)
     assert http_client.is_closed
+    assert http_client.headers["Authorization"] == "Bearer fake-test-token"
 
     engine.dispose.assert_awaited_once()
     connection.close.assert_awaited_once()
