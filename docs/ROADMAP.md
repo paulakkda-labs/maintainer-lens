@@ -154,81 +154,40 @@ not repository indexing or agent-generated investigation reports.
 #### Outside this initial M2 slice
 
 - [x] Add optional GitHub token support for repository ingestion in M3.
-- [ ] Coordinate GitHub rate limits across workers.
-- [ ] Fetch and index Issue comments and relevant Issue/PR history for retrieval.
+- [x] Coordinate GitHub rate limits across workers.
+- [x] Fetch and index Issue comments and relevant Issue/PR history for retrieval.
 
-### M3 — Repository Knowledge and RAG — In progress
+### M3 — Repository Knowledge and RAG
 
-**Repository indexing foundation — Completed and merged (Tasks 1–27).**
 
-- [x] Resolve public GitHub repository revisions and capture commit/tree SHA identities.
-- [x] Traverse Git trees, download source blobs, validate content, and apply bounded download concurrency.
-- [x] Implement syntax-aware source chunking for Python, JavaScript/TypeScript, Go, and Java, plus heading-aware Markdown chunking.
-- [x] Provide configurable, OpenAI-compatible document and query embedding clients.
-- [x] Persist versioned repository indexes, chunks, metadata, and embeddings in PostgreSQL with pgvector.
-- [x] Support configurable embedding dimensions, transactional index writes, and database uniqueness checks.
-- [x] Reuse ready indexes before paid embedding requests for the same repository revision and embedding/chunker configuration.
-- [x] Use PostgreSQL build leases, claim tokens, heartbeat renewal, and transaction-level fencing to reject stale workers.
-- [x] Verify real PostgreSQL concurrency and transactional behavior with opt-in integration tests.
-- [x] Verify live end-to-end indexing of `pypa/sampleproject`: **13 stored chunks**, **1024-dimensional embeddings**, **1 initial embedding request**, **0 additional requests on reuse**, and **no remaining build lease**.
-- [x] Merge the completed repository ingestion and vector indexing implementation through the feature-branch / squash-merge workflow.
+### M3 Completion Summary
 
-**M3-4/M3-5 — Source retrieval and initial evidence evaluation — Implemented and verified (Tasks 28–40); PR pending.**
+M3 repository knowledge and retrieval implementation is complete.
 
-- [x] Implement query embedding and top-k exact pgvector cosine similarity search scoped to one ready repository index.
-- [x] Return attributable source evidence with revision identity, path, line range, and chunk metadata.
-- [x] Implement PostgreSQL `ILIKE` literal-keyword retrieval with identifier/path/content ranking, including wildcard escaping and index isolation.
-- [x] Implement deterministic reciprocal rank fusion (RRF) and semantic + optional keyword hybrid retrieval.
-- [x] Add conservative code-identifier query analysis and a unified natural-language repository search entry point.
-- [x] Verify live Chinese/English semantic and hybrid retrieval with real GitHub, PostgreSQL, and an embedding provider.
-- [x] Implement Recall@K and MRR@K metrics, a manually labeled pinned-commit dataset, and evidence-anchor-to-chunk-key resolution.
-- [x] Add self-contained PostgreSQL integration tests with isolated data setup and cleanup for anchor resolution.
-- [x] Compare semantic vs. automatic hybrid retrieval on eight real end-to-end queries against `pypa/sampleproject` at commit `621e4974ca25ce531773def586ba3ed8e736b3fc`: both scored **Recall@5 = 1.000** and **MRR@5 = 1.000**, with all labeled evidence at rank 1.
+- Source and documentation RAG: commit-pinned indexing, embeddings,
+  pgvector retrieval, hybrid search with RRF, and traceable citations.
+- History RAG: GitHub issue and pull-request ingestion, discussion
+  comments, bounded backfill, incremental synchronization, and
+  PostgreSQL persistence.
+- History retrieval: semantic search is the default; keyword search
+  remains available for exact technical identifiers.
+- Integration: the history ingestion, embedding, persistence, and
+  retrieval pipeline passed live GitHub and embedding-provider tests.
+- Evaluation: a controlled benchmark with 40 real issues and
+  14 queries achieved 92.9% semantic Top-1 accuracy against
+  predefined target issues, Recall@5 of 1.000, and MRR@5 of 0.964.
 
-**M3-6 — Historical Issue/PR knowledge — Not started**
+Limitations:
+- The benchmark is small and not representative of production-scale
+  retrieval accuracy. Additional candidate issues were not
+  exhaustively labeled for relevance.
+- History ingestion and indexing are bounded; a complete GitHub
+  repository mirror is not provided.
+- Retrieval components are implemented, but LangGraph investigation
+  orchestration and evidence-grounded reports belong to M4.
 
-- [ ] Fetch relevant public GitHub Issues, Issue comments, PRs, PR comments or
-      reviews as needed, and change-file metadata using bounded API access.
-- [ ] Persist stable GitHub object identifiers, provenance URLs, timestamps,
-      and content needed for reproducible retrieval. Handle mutable history
-      using update/capture metadata rather than treating it as immutable code.
-- [ ] Prepare searchable text/chunks and versioned embeddings or another
-      justified retrieval representation; reuse existing infrastructure where
-      appropriate without forcing history into source-only index identities.
-- [ ] Support isolated, idempotent ingestion/update and traceable history
-      search independently of the investigation Worker.
-- [ ] Record confirmed Issue–PR relationships, relevant changed files, and
-      verifiable fix/source links; do not invent inferred relationships.
-- [ ] Cover important failures, pagination, duplicate/update behavior,
-      transaction boundaries, cleanup, and source attribution with tests.
+M4 will integrate source and history retrieval as investigation tools.
 
-**M3-7 — Multi-source retrieval evaluation and M3 closeout — Not started**
-
-- [ ] Build a modest but representative manually labeled evaluation set for
-      complex Issues, source files, comments, related PRs, and multi-evidence
-      answers; keep known limitations explicit.
-- [ ] Compare source and history retrieval quality on pinned/reproducible
-      fixtures and selected opt-in real tests, checking Recall@K, MRR@K, and
-      evidence provenance.
-- [ ] Fix demonstrated correctness/retrieval problems, avoiding speculative
-      refactors. HNSW, reranking, and separate search engines remain optional
-      and evidence-driven rather than mandatory M3 features.
-- [ ] Pass relevant quality/integration checks, merge the history/evaluation
-      work through PRs, and mark **M3 Completed** only after these items land.
-
-**Boundary with M4:** M3 supplies independently callable, source-attributed
-repository and history retrieval. It does **not** integrate them into the
-Investigation Runner. M4 will wrap the retrieval services as LangGraph tools,
-orchestrate the investigation, and connect the workflow to the existing
-RabbitMQ Worker and durable task lifecycle. Avoid a temporary hand-coded
-Worker search pipeline that would duplicate the later Agent workflow.
-
-The eight-query `pypa/sampleproject` benchmark covers only **two distinct
-source targets**. Both strategies achieved Recall@5 = 1.000 and MRR@5 = 1.000
-with all target chunks ranked first, validating the smoke-test path but not
-establishing general effectiveness or hybrid superiority. V1 retains exact
-pgvector cosine search; no HNSW/reranker is needed without evidence. A
-separate indexing queue/worker remains deferred until load warrants it.
 
 ### M4 — Multi-Agent Issue Investigation — Planned
 
