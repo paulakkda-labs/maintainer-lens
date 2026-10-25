@@ -1,0 +1,112 @@
+
+{
+  "schema_version": 1,
+  "repository": "pypa/sampleproject",
+  "commit_sha": "621e4974ca25ce531773def586ba3ed8e736b3fc",
+  "cases": [
+    {
+      "id": "add-one-en",
+      "language": "en",
+      "query": "Which function adds one to a given number?",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/simple.py",
+          "start_line": 1,
+          "end_line": 2,
+          "required_text": "return number + 1"
+        }
+      ]
+    },
+    {
+      "id": "add-one-zh",
+      "language": "zh",
+      "query": "哪个函数会把传入的数字加一？",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/simple.py",
+          "start_line": 1,
+          "end_line": 2,
+          "required_text": "return number + 1"
+        }
+      ]
+    },
+    {
+      "id": "entry-point-en",
+      "language": "en",
+      "query": "Where is the application script entry point function defined?",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/__init__.py",
+          "start_line": 1,
+          "end_line": 3,
+          "required_text": "Entry point for the application script"
+        }
+      ]
+    },
+    {
+      "id": "entry-point-zh",
+      "language": "zh",
+      "query": "项目中作为应用脚本入口的函数定义在哪里？",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/__init__.py",
+          "start_line": 1,
+          "end_line": 3,
+          "required_text": "Entry point for the application script"
+        }
+      ]
+    },
+    {
+      "id": "add-one-identifier-en",
+      "language": "en",
+      "query": "Where is `add_one()` defined?",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/simple.py",
+          "start_line": 1,
+          "end_line": 2,
+          "required_text": "return number + 1"
+        }
+      ]
+    },
+    {
+      "id": "add-one-identifier-zh",
+      "language": "zh",
+      "query": "在哪里定义 `add_one()`？",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/simple.py",
+          "start_line": 1,
+          "end_line": 2,
+          "required_text": "return number + 1"
+        }
+      ]
+    },
+    {
+      "id": "entry-point-identifier-en",
+      "language": "en",
+      "query": "Where is `main()` defined?",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/__init__.py",
+          "start_line": 1,
+          "end_line": 3,
+          "required_text": "Entry point for the application script"
+        }
+      ]
+    },
+    {
+      "id": "entry-point-identifier-zh",
+      "language": "zh",
+      "query": "项目的 `main()` 在哪里定义？",
+      "relevant_evidence": [
+        {
+          "file_path": "src/sample/__init__.py",
+          "start_line": 1,
+          "end_line": 3,
+          "required_text": "Entry point for the application script"
+        }
+      ]
+    }
+  ]
+}
