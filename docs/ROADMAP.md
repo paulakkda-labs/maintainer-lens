@@ -17,16 +17,20 @@ repository code, documentation, issues, and pull-request history.
 | M1-2 | SQLAlchemy Async and Alembic foundation | **Completed** |
 | M1-3 | Async Redis integration | **Completed** |
 | M1-4 | RabbitMQ and reliable worker foundation | **Completed and merged** |
-| M1-5 | GitHub Actions continuous integration | **Implemented locally; first GitHub Actions run pending** |
-| M2 | Public GitHub Issue ingestion, outbox, API, Docker packaging | **Implementation and Docker E2E verified; PR pending** |
-| M3 | Repository knowledge and RAG | Planned |
+| M1-5 | GitHub Actions continuous integration | **Completed and merged** |
+| M2 | Public GitHub Issue ingestion, outbox, API, Docker packaging | **Completed and merged** |
+| M3 | Repository knowledge and RAG | **In progress** — source indexing/retrieval and initial evaluation verified; Issue/PR history and broader evaluation pending |
 | M4 | Multi-agent investigation | Planned |
 | M5 | Memory and human-in-the-loop | Planned |
 | M6 | V1 release readiness | Planned |
 
-M1-5 is being completed within the current M2 feature branch, **before M2
-merges**. CI is configured, but it must run successfully on GitHub before
-M1-5 is marked complete. The original milestone number is kept for traceability.
+M1-5 and M2 have been completed and merged. M3 repository indexing has been
+verified with a live GitHub-to-pgvector test and merged. M3 source retrieval
+and initial evaluation (Tasks 28–40) have been implemented and live-tested on
+`feat/repository-vector-search`; that feature PR is not yet merged. M3 remains
+open until historical Issue/PR knowledge retrieval and broader multi-source
+evaluation are complete. Connecting those services to the Investigation
+Worker belongs to **M4 (LangGraph)**, not M3.
 
 ## V1 — Public Repository Investigation
 
@@ -76,8 +80,9 @@ investigation. Private repositories and GitHub write operations are V2 scope.
 
 #### M1-5 — Continuous Integration — Completed and merged
 
-The workflow is defined in `.github/workflows/ci.yml`. Its first real
-GitHub-hosted run is still required before this milestone is completed.
+The workflow is defined in `.github/workflows/ci.yml`. Both jobs were
+verified green on GitHub Actions during M2 development. Feature pushes, pull
+requests, and updates to `main` trigger CI according to the workflow.
 
 - [x] Configure GitHub Actions for feature branch pushes, pull requests,
       updates to `main`, and manual dispatch.
@@ -96,8 +101,8 @@ no repository secrets or production infrastructure are needed for these tests.
 
 ### M2 — Public GitHub Issue Ingestion and Reliable Delivery
 
-**Status: Implemented and verified with a Docker-hosted end-to-end public Issue
-investigation. CI validation and PR merge remain outstanding.**
+**Status: Completed, verified with a Docker-hosted public-Issue end-to-end
+test, and merged through PR #7.**
 
 This milestone delivers a complete **public-Issue snapshot** vertical slice,
 not repository indexing or agent-generated investigation reports.
@@ -142,30 +147,111 @@ not repository indexing or agent-generated investigation reports.
 - [x] Document installation, lifecycle commands, diagnostics, and local tests.
 - [x] Confirm **Docker-hosted** HTTP → Outbox → RabbitMQ → Worker → GitHub →
       Snapshot → HTTP success with `pydantic/pydantic` Issue #13781.
-- [ ] Confirm GitHub Actions quality and integration jobs pass.
-- [ ] Review the final diff and merge M2 via a squash-merge pull request.
-- [ ] Update the private/local project status after merge.
+- [x] Confirm GitHub Actions quality and integration jobs pass.
+- [x] Review the final diff and merge M2 via a squash-merge pull request (#7).
+- [x] Update the private/local project status after merge.
 
 #### Outside this initial M2 slice
 
-- [ ] Support GitHub authentication/tokens and shared cross-worker rate limits.
-- [ ] Fetch and persist repository source, documentation, comments, and
-      relevant Issue/PR history for retrieval.
+- [x] Add optional GitHub token support for repository ingestion in M3.
+- [ ] Coordinate GitHub rate limits across workers.
+- [ ] Fetch and index Issue comments and relevant Issue/PR history for retrieval.
 
-### M3 — Repository Knowledge and RAG — Planned
+### M3 — Repository Knowledge and RAG — In progress
 
-- [ ] Implement source/document/history ingestion and indexing.
-- [ ] Design code-aware and document-aware chunking.
-- [ ] Generate embeddings and store/search them with pgvector.
-- [ ] Provide retrieval with source references and evidence provenance.
-- [ ] Evaluate retrieval accuracy and relevance on real issues.
+**Repository indexing foundation — Completed and merged (Tasks 1–27).**
+
+- [x] Resolve public GitHub repository revisions and capture commit/tree SHA identities.
+- [x] Traverse Git trees, download source blobs, validate content, and apply bounded download concurrency.
+- [x] Implement syntax-aware source chunking for Python, JavaScript/TypeScript, Go, and Java, plus heading-aware Markdown chunking.
+- [x] Provide configurable, OpenAI-compatible document and query embedding clients.
+- [x] Persist versioned repository indexes, chunks, metadata, and embeddings in PostgreSQL with pgvector.
+- [x] Support configurable embedding dimensions, transactional index writes, and database uniqueness checks.
+- [x] Reuse ready indexes before paid embedding requests for the same repository revision and embedding/chunker configuration.
+- [x] Use PostgreSQL build leases, claim tokens, heartbeat renewal, and transaction-level fencing to reject stale workers.
+- [x] Verify real PostgreSQL concurrency and transactional behavior with opt-in integration tests.
+- [x] Verify live end-to-end indexing of `pypa/sampleproject`: **13 stored chunks**, **1024-dimensional embeddings**, **1 initial embedding request**, **0 additional requests on reuse**, and **no remaining build lease**.
+- [x] Merge the completed repository ingestion and vector indexing implementation through the feature-branch / squash-merge workflow.
+
+**M3-4/M3-5 — Source retrieval and initial evidence evaluation — Implemented and verified (Tasks 28–40); PR pending.**
+
+- [x] Implement query embedding and top-k exact pgvector cosine similarity search scoped to one ready repository index.
+- [x] Return attributable source evidence with revision identity, path, line range, and chunk metadata.
+- [x] Implement PostgreSQL `ILIKE` literal-keyword retrieval with identifier/path/content ranking, including wildcard escaping and index isolation.
+- [x] Implement deterministic reciprocal rank fusion (RRF) and semantic + optional keyword hybrid retrieval.
+- [x] Add conservative code-identifier query analysis and a unified natural-language repository search entry point.
+- [x] Verify live Chinese/English semantic and hybrid retrieval with real GitHub, PostgreSQL, and an embedding provider.
+- [x] Implement Recall@K and MRR@K metrics, a manually labeled pinned-commit dataset, and evidence-anchor-to-chunk-key resolution.
+- [x] Add self-contained PostgreSQL integration tests with isolated data setup and cleanup for anchor resolution.
+- [x] Compare semantic vs. automatic hybrid retrieval on eight real end-to-end queries against `pypa/sampleproject` at commit `621e4974ca25ce531773def586ba3ed8e736b3fc`: both scored **Recall@5 = 1.000** and **MRR@5 = 1.000**, with all labeled evidence at rank 1.
+
+**M3-6 — Historical Issue/PR knowledge — Not started**
+
+- [ ] Fetch relevant public GitHub Issues, Issue comments, PRs, PR comments or
+      reviews as needed, and change-file metadata using bounded API access.
+- [ ] Persist stable GitHub object identifiers, provenance URLs, timestamps,
+      and content needed for reproducible retrieval. Handle mutable history
+      using update/capture metadata rather than treating it as immutable code.
+- [ ] Prepare searchable text/chunks and versioned embeddings or another
+      justified retrieval representation; reuse existing infrastructure where
+      appropriate without forcing history into source-only index identities.
+- [ ] Support isolated, idempotent ingestion/update and traceable history
+      search independently of the investigation Worker.
+- [ ] Record confirmed Issue–PR relationships, relevant changed files, and
+      verifiable fix/source links; do not invent inferred relationships.
+- [ ] Cover important failures, pagination, duplicate/update behavior,
+      transaction boundaries, cleanup, and source attribution with tests.
+
+**M3-7 — Multi-source retrieval evaluation and M3 closeout — Not started**
+
+- [ ] Build a modest but representative manually labeled evaluation set for
+      complex Issues, source files, comments, related PRs, and multi-evidence
+      answers; keep known limitations explicit.
+- [ ] Compare source and history retrieval quality on pinned/reproducible
+      fixtures and selected opt-in real tests, checking Recall@K, MRR@K, and
+      evidence provenance.
+- [ ] Fix demonstrated correctness/retrieval problems, avoiding speculative
+      refactors. HNSW, reranking, and separate search engines remain optional
+      and evidence-driven rather than mandatory M3 features.
+- [ ] Pass relevant quality/integration checks, merge the history/evaluation
+      work through PRs, and mark **M3 Completed** only after these items land.
+
+**Boundary with M4:** M3 supplies independently callable, source-attributed
+repository and history retrieval. It does **not** integrate them into the
+Investigation Runner. M4 will wrap the retrieval services as LangGraph tools,
+orchestrate the investigation, and connect the workflow to the existing
+RabbitMQ Worker and durable task lifecycle. Avoid a temporary hand-coded
+Worker search pipeline that would duplicate the later Agent workflow.
+
+The eight-query `pypa/sampleproject` benchmark covers only **two distinct
+source targets**. Both strategies achieved Recall@5 = 1.000 and MRR@5 = 1.000
+with all target chunks ranked first, validating the smoke-test path but not
+establishing general effectiveness or hybrid superiority. V1 retains exact
+pgvector cosine search; no HNSW/reranker is needed without evidence. A
+separate indexing queue/worker remains deferred until load warrants it.
 
 ### M4 — Multi-Agent Issue Investigation — Planned
 
-- [ ] Implement LangGraph investigation workflows and specialized agents.
-- [ ] Introduce reliable tool calling and structured investigation outputs.
-- [ ] Produce reports with traceable claims and supporting evidence.
-- [ ] Support asynchronous execution, task progress, and failures.
+Start **only after M3-6 and M3-7 are complete**. Begin with one reliable
+LangGraph investigation workflow, not a complex multi-agent graph. Keep the
+existing M2 task delivery and lease/claim-token ownership model.
+
+- [ ] Define investigation state, nodes, routing, iteration bounds, and
+      structured outputs in LangGraph; expand to multiple agent roles only
+      when the single workflow is reliable.
+- [ ] Add thin tool adapters around existing M3 source search and Issue/PR
+      history search; do not reimplement those retrieval services in the graph.
+- [ ] Use the persisted GitHub Issue snapshot and collected evidence to
+      distinguish verified facts, hypotheses, missing evidence, and citations.
+- [ ] Integrate LangGraph execution with the Investigation Runner/Worker,
+      including cancellation, lease ownership, bounded retries, error
+      propagation, task state, and result persistence.
+- [ ] Generate an evidence-backed investigation report and verify citations
+      point to actual source/history objects.
+- [ ] Validate a real public Issue through the integrated workflow.
+
+Persistent checkpointing, long-term memory, and human approval mature in M5;
+M4 first establishes the workflow and its integration boundaries.
 
 ### M5 — Memory and Human-in-the-Loop — Planned
 
@@ -180,6 +266,8 @@ not repository indexing or agent-generated investigation reports.
 - [ ] Strengthen reliability, observability, and security boundaries.
 - [ ] Provide reproducible deployment and configuration documentation.
 - [ ] Publish English documentation and a Chinese README.
+- [ ] Deliver a small usable Web UI for submitting public Issue URLs,
+      viewing status and evidence-backed reports, and reviewer actions.
 - [ ] Prepare an end-to-end public demo.
 
 ## V2 — Private Repository Support — Planned
