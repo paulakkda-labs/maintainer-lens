@@ -73,18 +73,20 @@ def create_source_searcher(
         query: str,
     ):
         async with session_factory() as session:
-            repository_index = await session.get(
-                RepositoryIndex,
-                index_id,
-            )
-
-            if repository_index is None:
-                raise ValueError("Source index does not exist")
-
-            if repository_index.repository != repository:
-                raise ValueError(
-                    "Source index does not belong to the requested repository"
+            # End the ownership lookup before the retriever opens its transactions.
+            async with session.begin():
+                repository_index = await session.get(
+                    RepositoryIndex,
+                    index_id,
                 )
+
+                if repository_index is None:
+                    raise ValueError("Source index does not exist")
+
+                if repository_index.repository != repository:
+                    raise ValueError(
+                        "Source index does not belong to the requested repository"
+                    )
 
             return await search_repository(
                 session,
@@ -111,7 +113,9 @@ def make_history_search_node(history_searcher: HistorySearcher):
         )
 
         current: list[HistoryEvidence] = [
-            to_history_evidence(hit, state["repository"]) for hit in hits
+            to_history_evidence(hit, state["repository"])
+            for hit in hits
+            if hit.number != state["issue_number"]
         ]
 
         merged, new_count = merge_history_evidence(

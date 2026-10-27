@@ -9,6 +9,7 @@ from pydantic import AliasPath, BaseModel, Field
 from maintainer_lens.clients.github import (
     GITHUB_API_BASE_URL,
     GITHUB_API_VERSION,
+    fetch_public_repository_metadata,
 )
 from maintainer_lens.schemas.repository import RepositoryRevision
 
@@ -51,13 +52,8 @@ async def resolve_repository_revision(
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
     }
 
-    repository_response = await http_client.get(
-        f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}",
-        headers=headers,
-    )
-    repository_response.raise_for_status()
-
-    repository_data = _RepositoryResponse.model_validate(repository_response.json())
+    metadata = await fetch_public_repository_metadata(http_client, repository)
+    repository_data = _RepositoryResponse.model_validate(metadata)
 
     branch = quote(repository_data.default_branch, safe="")
 

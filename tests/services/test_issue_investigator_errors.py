@@ -54,10 +54,14 @@ async def test_github_http_error_classification(
     """Classify GitHub HTTP errors before opening a database session."""
 
     transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            status_code,
-            headers=headers,
-            text=body,
+        lambda request: (
+            httpx.Response(200, json={"private": False})
+            if request.url.path.count("/") == 3
+            else httpx.Response(
+                status_code,
+                headers=headers,
+                text=body,
+            )
         )
     )
 
@@ -82,6 +86,8 @@ async def test_network_error_is_retryable() -> None:
     """Classify network failures as retryable investigation errors."""
 
     def fail(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         raise httpx.ConnectError(
             "Connection failed",
             request=request,
@@ -108,9 +114,13 @@ async def test_rate_limit_preserves_retry_deadline() -> None:
     """Preserve the earliest permitted retry time."""
 
     transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            429,
-            headers={"retry-after": "120"},
+        lambda request: (
+            httpx.Response(200, json={"private": False})
+            if request.url.path.count("/") == 3
+            else httpx.Response(
+                429,
+                headers={"retry-after": "120"},
+            )
         )
     )
 

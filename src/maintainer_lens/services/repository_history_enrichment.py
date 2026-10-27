@@ -82,7 +82,8 @@ async def collect_repository_history_enrichment(
                 page=current_page,
                 per_page=comments_per_page,
             )
-            requests_made += 1
+            # Each content request first verifies public repository metadata.
+            requests_made += 2
             comments.extend(page.comments)
 
             if page.next_page is None:
@@ -101,7 +102,7 @@ async def collect_repository_history_enrichment(
                 repository,
                 item.number,
             )
-            requests_made += 1
+            requests_made += 2
             pull_requests.append(details)
 
     return RepositoryHistoryEnrichment(

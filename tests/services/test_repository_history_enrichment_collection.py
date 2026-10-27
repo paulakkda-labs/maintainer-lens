@@ -66,6 +66,8 @@ async def test_bounded_collection_keeps_incomplete_comment_status() -> None:
     requested: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         requested.append(str(request.url))
         path = request.url.path
         page = int(request.url.params.get("page", "1"))
@@ -106,13 +108,15 @@ async def test_bounded_collection_keeps_incomplete_comment_status() -> None:
     assert [pr.number for pr in result.pull_requests] == [2]
     assert result.incomplete_comment_numbers == (1,)
     assert result.unprocessed_items == 1
-    assert result.requests_made == 4
+    assert result.requests_made == 8
     assert len(requested) == 4
     assert all("/issues/3/" not in url for url in requested)
 
 
 async def test_invalid_budget_is_rejected_before_network() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         raise AssertionError("Network must not be requested")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -142,7 +146,13 @@ async def test_invalid_budget_is_rejected_before_network() -> None:
 
 async def test_github_failure_propagates() -> None:
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(503))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(503)
+            )
+        )
     ) as client:
         with pytest.raises(httpx.HTTPStatusError):
             await collect_repository_history_enrichment(

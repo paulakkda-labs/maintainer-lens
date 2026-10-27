@@ -1,5 +1,6 @@
 """LangGraph node for evidence-grounded LLM analysis."""
 
+from maintainer_lens.agents.investigation.evidence import history_evidence_id
 from maintainer_lens.agents.investigation.state import InvestigationState
 from maintainer_lens.agents.investigation_analysis import (
     AnalysisEvidence,
@@ -22,13 +23,11 @@ def make_analysis_node(analyzer: InvestigationAnalyzer):
         evidence: list[AnalysisEvidence] = []
 
         for hit in state.get("history_evidence", [])[:5]:
-            if hit["source_type"] == "comment":
-                if hit["comment_id"] is None:
-                    raise ValueError("Historical comment evidence is missing its ID")
-
-                evidence_id = f"history:comment:{hit['comment_id']}"
-            else:
-                evidence_id = f"history:item:{hit['number']}"
+            if hit["repository"] != state["repository"]:
+                raise ValueError("History evidence belongs to another repository")
+            if hit["number"] == state["issue_number"]:
+                continue
+            evidence_id = history_evidence_id(hit)
 
             evidence.append(
                 {

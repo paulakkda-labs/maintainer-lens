@@ -4,11 +4,13 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustExchange
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from maintainer_lens.db.investigation_tasks import get_investigation_task_status
 from maintainer_lens.investigation_runner import (
     InvestigationClaimUnavailableError,
+    LeaseLostError,
     PermanentInvestigationError,
     RetryableInvestigationError,
     execute_investigation_task,
@@ -28,6 +30,10 @@ MAX_MISSING_TASK_CHECKS = 3
 MAX_INVESTIGATION_RETRIES = 3
 
 
+class InvalidInvestigationMessageError(ValueError):
+    """The delivery body cannot represent an investigation request."""
+
+
 class RetryableMessageError(RuntimeError):
     """Raised when a message requires a delayed retry."""
 
@@ -42,10 +48,13 @@ class RetryableMessageError(RuntimeError):
 
 async def handle_investigation_message(
     message: AbstractIncomingMessage,
-    processor: Callable[[InvestigationRequestedMessage, bool], Awaitable[None]],
+    processor: Callable[[InvestigationRequestedMessage], Awaitable[None]],
 ) -> None:
     """Validate and dispatch an investigation request for processing."""
-    request = parse_investigation_message(message)
+    try:
+        request = parse_investigation_message(message)
+    except ValidationError as exc:
+        raise InvalidInvestigationMessageError("Invalid investigation message") from exc
     await processor(request)
 
 
@@ -64,7 +73,11 @@ async def process_investigation_request(
             final_attempt=final_attempt,
         )
 
-    except InvestigationClaimUnavailableError as exc:
+    except (InvestigationClaimUnavailableError, LeaseLostError, ExceptionGroup) as exc:
+        if isinstance(exc, ExceptionGroup):
+            _, remaining = exc.split(LeaseLostError)
+            if remaining is not None:
+                raise
         async with session_factory() as session:
             status = await get_investigation_task_status(
                 session=session,
@@ -112,25 +125,23 @@ async def handle_investigation_message_with_retry(
     headers = message.headers or {}
     retry_attempts = headers.get(RETRY_ATTEMPTS_HEADER, 0)
 
-    if type(retry_attempts) is not int or retry_attempts < 0:
-        raise ValueError("Invalid retry attempts header")
+    try:
+        if type(retry_attempts) is not int or retry_attempts < 0:
+            raise ValueError("Invalid retry attempts header")
+        missing_checks = headers.get(MISSING_TASK_CHECKS_HEADER, 0)
+        if type(missing_checks) is not int or missing_checks < 0:
+            raise ValueError("Invalid missing task checks header")
+        deadline = parse_retry_not_before(headers)
+    except ValueError:
+        await republish_investigation_message(
+            exchange=exchange,
+            incoming_message=message,
+            routing_key=DEAD_ROUTING_KEY,
+            retry_attempts=0,
+        )
+        return
 
-    retry_not_before = headers.get(RETRY_NOT_BEFORE_HEADER)
-
-    if retry_not_before is not None:
-        if not isinstance(retry_not_before, str):
-            raise ValueError("Invalid retry deadline header")
-
-        try:
-            deadline = datetime.fromisoformat(retry_not_before)
-        except ValueError as exc:
-            raise ValueError("Invalid retry deadline header") from exc
-
-        if deadline.tzinfo is None or deadline.utcoffset() is None:
-            raise ValueError("Retry deadline must include a timezone")
-
-        deadline = deadline.astimezone(UTC)
-
+    if deadline is not None:
         if datetime.now(UTC) < deadline:
             await republish_investigation_message(
                 exchange=exchange,
@@ -150,6 +161,14 @@ async def handle_investigation_message_with_retry(
         await handle_investigation_message(
             message=message,
             processor=dispatch,
+        )
+
+    except InvalidInvestigationMessageError:
+        await republish_investigation_message(
+            exchange=exchange,
+            incoming_message=message,
+            routing_key=DEAD_ROUTING_KEY,
+            retry_attempts=retry_attempts,
         )
 
     except RetryableMessageError as exc:

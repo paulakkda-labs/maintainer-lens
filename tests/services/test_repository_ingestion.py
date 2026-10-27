@@ -25,7 +25,7 @@ async def test_build_repository_manifest_success() -> None:
         if path == "/repos/encode/httpx":
             return httpx.Response(
                 200,
-                json={"default_branch": "master"},
+                json={"private": False, "default_branch": "master"},
             )
 
         if path == "/repos/encode/httpx/branches/master":
@@ -103,7 +103,7 @@ async def test_build_repository_manifest_propagates_tree_error() -> None:
         if path == "/repos/encode/httpx":
             return httpx.Response(
                 200,
-                json={"default_branch": "main"},
+                json={"private": False, "default_branch": "main"},
             )
 
         if path == "/repos/encode/httpx/branches/main":

@@ -3,9 +3,11 @@
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pydantic import ValidationError
 
-from maintainer_lens.messaging.handler import handle_investigation_message
+from maintainer_lens.messaging.handler import (
+    InvalidInvestigationMessageError,
+    handle_investigation_message,
+)
 from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
 
 
@@ -37,7 +39,7 @@ async def test_handler_rejects_invalid_message() -> None:
     )
     processor = AsyncMock()
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidInvestigationMessageError):
         await handle_investigation_message(message, processor)
 
     processor.assert_not_awaited()

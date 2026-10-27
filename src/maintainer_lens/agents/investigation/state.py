@@ -58,7 +58,13 @@ type InvestigationNextStep = Literal[
     "needs_more_evidence",
 ]
 
-type AnalysisRoute = Literal["ready", "follow_up", "retry"]
+type AnalysisRoute = Literal[
+    "ready",
+    "follow_up",
+    "retry",
+    "plan",
+    "tool",
+]
 
 
 class InvestigationState(TypedDict):
@@ -82,6 +88,13 @@ class InvestigationState(TypedDict):
     new_history_evidence: NotRequired[int]
     new_source_evidence: NotRequired[int]
     no_new_evidence: NotRequired[bool]
+    planned_query: NotRequired[str | None]
+    planning_reason: NotRequired[str | None]
+    tool_search_skipped: NotRequired[bool]
+    tool_stop_reason: NotRequired[str]
+    last_tool_name: NotRequired[Literal["search_history", "search_source"] | None]
+    last_tool_call_id: NotRequired[str | None]
+    last_tool_feedback: NotRequired[str | None]
 
     next_step: NotRequired[InvestigationNextStep]
     routing_reason: NotRequired[str]

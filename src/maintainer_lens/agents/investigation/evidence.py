@@ -1,7 +1,7 @@
 """Evidence conversion, provenance checks, and deduplication."""
 
 from string import hexdigits
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 from maintainer_lens.agents.investigation.state import (
@@ -56,7 +56,10 @@ def to_history_evidence(
     if hit.repository != repository:
         raise ValueError("History evidence belongs to another repository")
 
-    return {
+    if hit.source_updated_at.utcoffset() is None:
+        raise ValueError("History evidence timestamp must include a timezone")
+
+    record: HistoryEvidence = {
         "repository": hit.repository,
         "number": hit.number,
         "source_type": hit.source_type,
@@ -67,6 +70,40 @@ def to_history_evidence(
         "source_updated_at": hit.source_updated_at.isoformat(),
         "distance": hit.distance,
     }
+    history_evidence_id(record)
+    return record
+
+
+def history_evidence_id(hit: HistoryEvidence) -> str:
+    """Validate historical provenance before assigning a citation ID."""
+    number = hit["number"]
+    if type(number) is not int or number <= 0:
+        raise ValueError("History evidence has an invalid issue number")
+
+    url = urlsplit(hit["source_url"])
+    repository = hit["repository"].casefold()
+    paths = {
+        f"/{repository}/issues/{number}",
+        f"/{repository}/pull/{number}",
+    }
+    if (
+        url.scheme != "https"
+        or url.netloc.casefold() != "github.com"
+        or url.path.casefold() not in paths
+        or url.query
+    ):
+        raise ValueError("History evidence has an invalid source URL")
+
+    if hit["source_type"] == "comment":
+        comment_id = hit["comment_id"]
+        if type(comment_id) is not int or comment_id <= 0:
+            raise ValueError("Historical comment evidence is missing its ID")
+        if url.fragment != f"issuecomment-{comment_id}":
+            raise ValueError("History comment URL does not match its ID")
+        return f"history:comment:{comment_id}"
+    if hit["source_type"] != "item" or hit["comment_id"] is not None or url.fragment:
+        raise ValueError("History evidence has an invalid object identity")
+    return f"history:item:{number}"
 
 
 def to_source_evidence(
@@ -110,11 +147,11 @@ def merge_history_evidence(
 ) -> tuple[list[HistoryEvidence], int]:
     """Keep current hits first and deduplicate historical evidence."""
 
-    def identity(hit: HistoryEvidence) -> tuple[str, int, int | None]:
-        return hit["source_type"], hit["number"], hit["comment_id"]
+    def identity(hit: HistoryEvidence) -> tuple[str, str, int, int | None]:
+        return hit["repository"], hit["source_type"], hit["number"], hit["comment_id"]
 
     previous_ids = {identity(hit) for hit in previous}
-    seen: set[tuple[str, int, int | None]] = set()
+    seen: set[tuple[str, str, int, int | None]] = set()
     merged: list[HistoryEvidence] = []
     new_count = 0
 

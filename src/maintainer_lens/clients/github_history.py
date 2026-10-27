@@ -11,6 +11,7 @@ from maintainer_lens.clients.github import (
     GITHUB_API_BASE_URL,
     GITHUB_API_VERSION,
     GitHubIssue,
+    fetch_public_repository_metadata,
 )
 
 
@@ -80,6 +81,8 @@ async def fetch_repository_history_page(
         )
 
     owner, repo = parts
+
+    await fetch_public_repository_metadata(http_client, repository)
 
     response = await http_client.get(
         f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/issues",

@@ -1,84 +1,106 @@
 # MaintainerLens
 
-**Evidence-driven GitHub issue investigation on a reliable asynchronous Python backend.**
+**Evidence-grounded, asynchronous GitHub Issue investigation for open-source maintainers.**
 
-MaintainerLens is an Apache-2.0-licensed project under active development. Its
-current working vertical slice accepts a **public GitHub issue**, records an
-investigation request transactionally, dispatches it through RabbitMQ, fetches
-the issue in a background worker, and exposes the persisted snapshot through an
-HTTP API.
+MaintainerLens is an Apache-2.0 project under active development. V1 targets **public GitHub repositories** and a read-only, server-side investigation experience: reliable asynchronous Issue intake; source/documentation and historical Issue/PR retrieval; bounded LangGraph reasoning; evidence-linked conclusions; and, in later milestones, durable workflow recovery, memory, and human review. It is not an IDE code-editing assistant or an automatic source patcher.
 
-A separate repository knowledge pipeline is also implemented and tested: it
-fetches public repository source, produces syntax-aware chunks, stores versioned
-embeddings in PostgreSQL with pgvector, and offers semantic, literal-keyword,
-and automatically selected hybrid search with traceable source locations.
-Ground-truth retrieval evaluation is available as an opt-in workflow. The
-source-retrieval and evaluation changes are complete on the
-`feat/repository-vector-search` feature branch, pending PR merge. This
-pipeline is **not yet connected to the Investigation Worker**, and autonomous
-RAG-based analysis, agent-generated reports, Issue/PR history retrieval, and
-human review remain future work. **M3 is still in progress**: history ingestion,
-history-aware retrieval, and broader multi-source evaluation are outstanding.
-Only M4 will connect the knowledge services to a LangGraph investigation
-workflow and the existing Worker. See the [roadmap](docs/ROADMAP.md) for
-milestone boundaries.
+## Development status (October 28, 2026)
 
-## Current architecture
+- **M0–M2:** production HTTP→PostgreSQL transactional Outbox→RabbitMQ→Worker→GitHub Issue Snapshot→HTTP readback, tested end-to-end; existing `investigation_runner.py` provides DB claim/lease/fencing and safe status updates.
+- **M3:** source/documentation versioned indexing and retrieval plus history Issue/PR/comments ingestion and semantic retrieval, with small real-API retrieval benchmarks. Local `main` at `b1d1da0` includes the M3 indexing, hybrid retrieval, and history commits (#8–#10). Remote PR checks and deployment were not queried during the October 28 review.
+- **M4 in progress:** separately callable LangGraph structured investigation, source/history evidence, bounded loops, DeepSeek follow-up planning, real function calling, graph tool integration, and tool-level timeout/observability. **Tasks 53–62 are reported tested.** Live DeepSeek query planning and function-calling protocol tests succeeded, but the function-calling example used **mock retrieval evidence**.
+- **Important limitation:** The current **production Worker still invokes `services/issue_investigator.investigate_issue()` to fetch and save a snapshot**; it has **not yet been wired to the M4 LangGraph** as of the uploaded production code. There is no verified end-to-end Worker→Agent report path, report persistence, HITL, Checkpointer or cross-run memory. Do not interpret completed unit tests as deployed capabilities.
+- The October 28 maintenance changes repair source-adapter transactions, processor-error routing, poison-message handling, public-repository checks, and evidence boundaries. Regression tests are present but **await local execution by the developer**. The previously suggested separate `services/investigation_runner.py` Task 63 file is **not an accepted addition**.
+
+Development details: [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) · [Architecture decisions](docs/ADR/).
+
+## Architecture overview
+
+### Existing production path
 
 ```text
-Client
-  |
-  | POST /investigations
-  v
-FastAPI
-  |
-  | One PostgreSQL transaction
-  v
-InvestigationTask + InvestigationOutboxEvent
-  |
-  v
-Outbox Dispatcher -- publisher confirms --> RabbitMQ
-                                            |
-                                            v
-                                      Worker + Runner
-                                      (claim token + lease)
-                                            |
-                                            v
-                                      GitHub REST API
-                                            |
-                                            v
-                              PostgreSQL: Issue Snapshot + Status
-                                            |
-                                            v
-                          GET /investigations/{task_id}
+Client → FastAPI POST /investigations
+    → PostgreSQL (InvestigationTask + OutboxEvent in one transaction)
+    → independent Outbox Dispatcher (publisher confirms)
+    → RabbitMQ pending/retry/dead-letter queues
+    → independent Worker (handler, task claim, claim token, lease renewal)
+    → GitHub public Issue fetch + fenced IssueSnapshot persistence
+    → task status
+    → FastAPI GET /investigations/{task_id}
 ```
 
-The API, dispatcher, and worker are **independent, long-running services**.
-The migration job is a separate **one-off task**, not a seventh long-running
-service. Message delivery and execution use **at-least-once semantics**; claim
-tokens, leases, and guarded persistence help tolerate duplicate or delayed
-processing. Redis is integrated as infrastructure; cross-worker rate limiting
-and caching are future work.
+The API, dispatcher and worker are independent long-running Python services. The database, Redis and RabbitMQ services run separately; Alembic migration is a one-shot job. Message processing has **at-least-once semantics**. Claim tokens, expiring leases, guarded writes and transactional Outbox handle duplicates and partial failures; these mechanisms do not promise exactly-once external LLM calls.
 
-### Repository knowledge and retrieval (callable services)
+### Callable knowledge and Agent modules (not currently a Worker report path)
 
 ```text
-GitHub public repository -> resolved commit/tree SHA -> source blobs
-    -> syntax-aware chunks -> embedding provider -> PostgreSQL / pgvector
-                                                        |
-Natural-language question -> query analysis -> semantic search
-                                         + optional ILIKE keyword search
-                                         -> reciprocal rank fusion (RRF)
-                                         -> ranked source evidence
+Pinned public repository → secure blob fetch → syntax-aware chunks
+    → Embedding → PostgreSQL / pgvector versioned ready index
+Question → source semantic/optional ILIKE keyword → RRF → SourceEvidence
+
+GitHub Issues/PRs/comments → bounded ingestion + incremental sync
+    → Embedding + PostgreSQL → semantic HistoryEvidence
+
+Issue + evidence → LangGraph: initial History/Source RAG
+    → cited structured LLM analysis
+    → optional bounded query planning or whitelisted tool calling
+    → deduplicated new evidence → reanalysis or early stop
 ```
 
-Source evidence is scoped to a specific repository index and carries file,
-line-range, and immutable revision information. Index construction supports
-ready-index reuse, PostgreSQL build leases, renewal, and fencing to prevent
-stale writers. Retrieval uses exact pgvector cosine-distance search; HNSW,
-a reranker, and a separate full-text engine are not part of the current V1
-implementation. The pipeline is callable by Python services and tests; it is
-**not yet exposed as an investigation report or integrated with the worker**.
+Source retrieval uses **exact pgvector cosine search** (no HNSW in V1) with optional literal `ILIKE` keyword retrieval fused using RRF; History defaults to semantic search. HNSW/reranking/new search engines are deferred until evaluation demonstrates a need. Citations include stable source URLs/commit/line spans and history object identities. A model's free-text interpretation is not sufficient proof of source facts.
+
+Initial source evaluation: eight bilingual queries (only two distinct relevant targets) achieved Recall@5 and MRR@5 of 1.000 for both source strategies. History evaluation: 40 candidate `encode/httpx` issues with 14 bilingual queries; semantic Top-1 92.9%, Recall@5 100%, MRR@5 0.964. **Small, incompletely representative tests are not population accuracy estimates.**
+
+## October 28 maintenance and validation
+
+The source Graph adapter completes its index-ownership lookup in a short
+transaction before calling the existing retrieval service. Embedding requests
+run after that transaction has ended. A real PostgreSQL/pgvector regression
+uses deterministic fake embeddings and isolated indexes; it does not call GitHub.
+
+The existing task runner classifies processor exceptions, including nested
+`ExceptionGroup` values: invalid data and non-transient HTTP failures are
+permanent; timeouts, network failures, transient HTTP failures and unexpected
+processor exceptions use the existing finite retry budget. Existing typed
+errors retain their policy; a permanent member makes a mixed processing group
+terminal. Lease loss and external cancellation never authorize stale status
+writes. The handler rechecks authoritative task status after lease loss, while
+mixed lease/infrastructure groups and database-finalization failures propagate.
+Malformed message bodies and retry headers are published to the dead queue;
+Consumer ACK still follows confirmed publication.
+
+Issue, history-page, comment-page and PR-detail clients require repository
+metadata with `private` exactly `false` before fetching content. Source revision
+resolution reuses its metadata request for the same check. Missing or ambiguous
+visibility fails closed. These checks add one metadata request per content
+request, without caching visibility; low-level tree/blob readers consume
+backend-selected revisions and manifests. Visibility can still change between
+requests; this is not private-repository authorization or tenant isolation.
+
+History evidence URLs must match their repository/object/comment IDs. The Graph
+excludes the current issue and its comments from independent historical evidence.
+Tool selection now has an explicit 600-token output cap; feedback retains its
+500-token cap. These bounds do not provide total cost accounting or stop remote
+billing after cancellation. History synchronization, detail enrichment and
+embedding refresh remain separate operations.
+
+Run from the repository root, with existing dependencies installed:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest -q
+
+# Existing, migrated non-production PostgreSQL with pgvector is required.
+# No GitHub, LLM, embedding-provider or RabbitMQ calls in these two files.
+RUN_POSTGRES_INTEGRATION=1 uv run pytest -q \
+  tests/integration/test_investigation_source_searcher_postgres.py \
+  tests/integration/test_investigation_error_recovery.py
+```
+
+The maintenance test results and current GitHub CI are **pending**. Tool deadlines
+remain opt-in wrappers; the whole-Graph deadline, durable reports with evidence
+snapshots, Worker integration, and checkpoints are still future work.
 
 ## Requirements
 
@@ -259,7 +281,7 @@ the application containers when necessary.
 
 ### Repository retrieval evaluation
 
-The evaluation dataset in `tests/fixtures/retrieval/sampleproject.json`
+The initial source evaluation dataset in `tests/fixtures/retrieval/sampleproject.json`
 contains eight English/Chinese queries with manually labeled source evidence
 at a fixed `pypa/sampleproject` commit. The evaluation package implements
 Recall@K / MRR@K, evidence-anchor-to-chunk-key resolution, and a comparison
@@ -294,7 +316,7 @@ The workflow is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 It runs on `feat/**`, `fix/**`, and `docs/**` pushes, pull requests, updates to
 `main`, and manual workflow dispatch.
 
-There are **two independent CI jobs**:
+The historical GitHub Actions configuration has **two independent CI jobs**:
 
 1. **Lint, unit tests, and package:** Python 3.12, locked `uv` installation,
    Ruff lint/format, default pytest tests, and wheel/source-distribution builds.
@@ -333,59 +355,20 @@ replace the local Compose/full GitHub API smoke test.
 External GitHub availability and rate limits can affect completion time. If a
 request fails, inspect `docker compose logs -f api dispatcher worker`.
 
-## Development status and next steps
+## Current milestone and contribution workflow
 
-The project uses feature branches and squash-merged pull requests. Milestones
-are completed only when their required capabilities have been implemented,
-verified, and merged.
+The current M4 integration work should reuse the production Worker and `src/maintainer_lens/investigation_runner.py` rather than introduce a competing task lifecycle. Before work, review `docs/ARCHITECTURE.md`, current source and tests; keep `agents/investigation_graph.py` strictly for node/edge composition. M5 will add persistent LangGraph checkpointing, human-in-the-loop decisions and trusted memory; M6 will focus on release-quality reliability, evaluation, UI and a Chinese README. V2 adds private repository authorization.
 
-| Area | Status |
-| --- | --- |
-| M0–M2: backend, reliable investigation queue, and public Issue snapshots | Completed and merged |
-| M3 repository ingestion, versioned embeddings, and indexing | Completed and merged |
-| M3 source semantic/keyword/hybrid retrieval and initial evaluation (Tasks 28–40) | Implemented and live-tested; **PR pending** |
-| M3-6 historical GitHub Issue/PR/comments knowledge ingestion, source links, and retrieval | Not started |
-| M3-7 broader source/history retrieval evaluation and milestone closeout | Not started |
-| M4 LangGraph investigation, tool adapters, and Worker orchestration | Not started |
-| M5 durable workflow checkpoints, memory, and human review | Not started |
+Use `feat/**` / `fix/**` / `docs/**` branches and reviewed squash-merge PRs; do not push to `main` directly. Before merging run Ruff, default pytest, appropriate opt-in integration tests and GitHub CI. Clearly label which integration levels actually ran. See [Roadmap](docs/ROADMAP.md) for milestones and [ADR](docs/ADR/) for established technical decisions.
 
-**Next steps, in order:**
+## Security and operational scope
 
-1. Review and squash-merge the current repository-retrieval/evaluation PR.
-2. Complete **M3-6** on a separate feature branch: collect and index relevant
-   historical Issues, PRs, comments, and verifiable fix/source relationships;
-   expose traceable history retrieval independently of the Agent.
-3. Complete **M3-7**: evaluate realistic, multi-source questions and improve
-   retrieval only for reproducible failures. Merge M3 work and close M3.
-4. Begin **M4**: use LangGraph to orchestrate the existing Issue Snapshot,
-   repository search, and history search through thin tool adapters. Integrate
-   the LangGraph execution with the already reliable Investigation Runner and
-   Worker. Do **not** wire repository search directly into the Worker as an
-   interim, competing investigation workflow.
-
-The M3 retrieval layer remains callable and testable without LangGraph. M4
-will use it rather than reimplementing indexing, embedding, or ranking.
-
-## Operational notes and scope
-
-- **Durability:** The investigation task and outbox event are committed in one
-  PostgreSQL transaction. The dispatcher marks an event published only after
-  broker confirmation.
-- **Execution safety:** PostgreSQL claim tokens and expiring leases guard
-  concurrent/late workers; delivery is at least once, **not exactly once**.
-- **Local security:** Development service ports bind to localhost; this Compose
-  stack is **not a hardened public-internet deployment**.
-- **Data:** `postgres_data`, `redis_data`, and `rabbitmq_data` are persistent
-  named volumes. Never use `down -v` as a routine shutdown command.
-- **Current scope:** Public GitHub Issue retrieval and snapshot persistence,
-  plus separately callable public-repository indexing and source retrieval.
-  Investigation-time repository search, historical Issue/PR knowledge,
-  multi-agent reports, HITL, private-repository authorization, and shared
-  cross-worker rate-limit coordination remain planned.
-
-This README is the **current development and operations guide**, not final
-release documentation. The project uses feature branches, pull-request review,
-and squash merges; `main` is not a development branch.
+- Local Compose ports are intentionally bound to localhost; this stack is **not a hardened public deployment**.
+- Keep `.env`, API keys, PATs, local `.local/` notes, and secrets out of Git, logs and reports.
+- Development PostgreSQL, Redis and RabbitMQ use persistent named volumes; never run `docker compose down -v` as routine cleanup.
+- A Docker `restart` does **not** rebuild application source; use `docker compose up -d --build` after code/dependency changes.
+- Do not run host-based and container-based API/Worker/Dispatcher instances accidentally against the same test infrastructure.
+- Live provider tests may incur API charges; keep them opt-in and clean up created test records.
 
 ## License
 

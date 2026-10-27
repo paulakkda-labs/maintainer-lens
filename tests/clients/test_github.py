@@ -24,6 +24,8 @@ async def test_fetch_github_issue_success() -> None:
     """Fetch and validate a public GitHub issue."""
 
     def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         assert str(request.url) == (
             "https://api.github.com/repos/fastapi/fastapi/issues/123"
         )
@@ -53,7 +55,13 @@ async def test_fetch_github_issue_http_failure(
 ) -> None:
     """Propagate GitHub HTTP errors to the caller."""
 
-    transport = httpx.MockTransport(lambda request: httpx.Response(status_code))
+    transport = httpx.MockTransport(
+        lambda request: (
+            httpx.Response(200, json={"private": False})
+            if request.url.path.count("/") == 3
+            else httpx.Response(status_code)
+        )
+    )
 
     async with httpx.AsyncClient(transport=transport) as client:
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
@@ -77,7 +85,13 @@ async def test_fetch_github_issue_rejects_pull_request() -> None:
         },
     }
 
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    transport = httpx.MockTransport(
+        lambda request: (
+            httpx.Response(200, json={"private": False})
+            if request.url.path.count("/") == 3
+            else httpx.Response(200, json=payload)
+        )
+    )
 
     async with httpx.AsyncClient(transport=transport) as client:
         with pytest.raises(ValueError, match="Pull request"):
@@ -105,7 +119,11 @@ async def test_fetch_github_issue_rejects_invalid_repository(
     """Reject invalid repository names before sending a request."""
 
     transport = httpx.MockTransport(
-        lambda request: pytest.fail("Unexpected HTTP request")
+        lambda request: (
+            httpx.Response(200, json={"private": False})
+            if request.url.path.count("/") == 3
+            else pytest.fail("Unexpected HTTP request")
+        )
     )
 
     async with httpx.AsyncClient(transport=transport) as client:

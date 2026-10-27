@@ -1,5 +1,6 @@
 """Tests for source retrieval in the LangGraph investigation workflow."""
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
@@ -195,6 +196,16 @@ class FakeSession:
         self.get = AsyncMock(return_value=SimpleNamespace(repository=repository))
         self.entered = False
         self.exited = False
+        self.in_transaction = False
+
+    @asynccontextmanager
+    async def begin(self):
+        assert not self.in_transaction
+        self.in_transaction = True
+        try:
+            yield self
+        finally:
+            self.in_transaction = False
 
     async def __aenter__(self):
         self.entered = True
@@ -211,7 +222,11 @@ async def test_source_searcher_delegates_to_existing_hybrid_search(
     session_factory = Mock(return_value=session)
     embedding_client = Mock()
 
-    search_repository = AsyncMock(return_value=[_source_hit()])
+    async def retrieve(*args, **kwargs):
+        assert not session.in_transaction
+        return [_source_hit()]
+
+    search_repository = AsyncMock(side_effect=retrieve)
 
     monkeypatch.setattr(
         workflow_module,

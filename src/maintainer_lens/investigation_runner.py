@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from maintainer_lens.db.investigation_tasks import (
@@ -34,6 +35,59 @@ class RetryableInvestigationError(Exception):
 
 class PermanentInvestigationError(Exception):
     """An investigation failure that must not be retried."""
+
+
+def _processing_error_leaves(error: Exception) -> list[Exception]:
+    """Inspect nested processor failures without swallowing cancellation."""
+    if isinstance(error, ExceptionGroup):
+        return [
+            leaf
+            for child in error.exceptions
+            for leaf in _processing_error_leaves(child)
+        ]
+    return [error]
+
+
+def _classify_processing_error(
+    error: Exception,
+) -> RetryableInvestigationError | PermanentInvestigationError:
+    """Map processor failures to the existing bounded delivery policy."""
+    leaves = _processing_error_leaves(error)
+    if any(isinstance(leaf, LeaseLostError) for leaf in leaves):
+        raise error
+
+    classified: list[RetryableInvestigationError | PermanentInvestigationError] = []
+    for leaf in leaves:
+        if isinstance(leaf, (RetryableInvestigationError, PermanentInvestigationError)):
+            classified.append(leaf)
+        elif isinstance(leaf, httpx.HTTPStatusError):
+            status = leaf.response.status_code
+            error_type = (
+                RetryableInvestigationError
+                if status >= 500 or status in (408, 409, 425, 429)
+                else PermanentInvestigationError
+            )
+            classified.append(error_type(f"Upstream request failed: HTTP {status}"))
+        elif isinstance(leaf, ValueError):
+            classified.append(PermanentInvestigationError("Invalid investigation data"))
+        else:
+            # Unknown failures still have the existing finite retry budget.
+            classified.append(
+                RetryableInvestigationError("Investigation processor failed")
+            )
+
+    permanent = next(
+        (item for item in classified if isinstance(item, PermanentInvestigationError)),
+        None,
+    )
+    if permanent is not None:
+        return permanent
+
+    retryable = classified[0]
+    deadlines = [item.not_before for item in classified if item.not_before is not None]
+    if deadlines:
+        retryable.not_before = max(deadlines)
+    return retryable
 
 
 async def maintain_investigation_lease(
@@ -128,11 +182,10 @@ async def execute_investigation_task(
 
         try:
             await processor(claim_token)
-        except (
-            RetryableInvestigationError,
-            PermanentInvestigationError,
-        ) as exc:
-            processing_error = exc
+        except LeaseLostError:
+            raise
+        except Exception as exc:
+            processing_error = _classify_processing_error(exc)
 
     await run_investigation_with_lease(
         session_factory=session_factory,

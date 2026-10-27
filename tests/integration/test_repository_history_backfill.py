@@ -110,6 +110,8 @@ async def test_backfill_resumes_and_initializes_incremental_checkpoint(
     requested_pages = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         assert request.url.params["sort"] == "created"
         assert request.url.params["direction"] == "asc"
         assert request.url.params["state"] == "all"
@@ -226,6 +228,8 @@ async def test_failed_page_does_not_advance_cursor_or_commit_items(
     repository, session_factory = history_db
 
     def failing_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         page = int(request.url.params["page"])
         if page == 2:
             return httpx.Response(503)
@@ -260,7 +264,13 @@ async def test_failed_page_does_not_advance_cursor_or_commit_items(
         assert count == 0
 
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: _page_response(repository, 1))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else _page_response(repository, 1)
+            )
+        )
     ) as client:
         result = await backfill_repository_history(
             session_factory,
@@ -282,11 +292,15 @@ async def test_stale_concurrent_backfill_cannot_commit(
     release_stale_request = Event()
 
     async def stale_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         stale_request_started.set()
         await release_stale_request.wait()
         return _page_response(repository, 10)
 
     def fresh_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         return _page_response(repository, 20)
 
     async with (

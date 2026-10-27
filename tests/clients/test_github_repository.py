@@ -22,7 +22,7 @@ async def test_resolve_repository_revision_success() -> None:
         if request.url.path == "/repos/encode/httpx":
             return httpx.Response(
                 200,
-                json={"default_branch": "master"},
+                json={"private": False, "default_branch": "master"},
             )
 
         if request.url.path == "/repos/encode/httpx/branches/master":
@@ -80,7 +80,7 @@ async def test_resolve_repository_revision_missing_tree_sha() -> None:
         if request.url.path == "/repos/encode/httpx":
             return httpx.Response(
                 200,
-                json={"default_branch": "main"},
+                json={"private": False, "default_branch": "main"},
             )
 
         return httpx.Response(

@@ -42,6 +42,13 @@ def make_prepare_query_node(*, require_source_index: bool):
             "new_history_evidence": 0,
             "new_source_evidence": 0,
             "no_new_evidence": False,
+            "planned_query": None,
+            "planning_reason": "",
+            "tool_search_skipped": False,
+            "tool_stop_reason": "",
+            "last_tool_name": None,
+            "last_tool_call_id": None,
+            "last_tool_feedback": None,
         }
 
         if require_source_index:
@@ -160,8 +167,13 @@ def assess_next_step(
     )
 
 
-def make_analysis_router(max_search_rounds: int):
-    """Create the routing function with a fixed search-round budget."""
+def make_analysis_router(
+    max_search_rounds: int,
+    *,
+    use_query_planner: bool = False,
+    use_tool_search: bool = False,
+):
+    """Choose a terminal path or a bounded follow-up strategy."""
 
     def route_after_analysis(state: InvestigationState) -> AnalysisRoute:
         route, _ = assess_next_step(state)
@@ -177,6 +189,12 @@ def make_analysis_router(max_search_rounds: int):
 
         if state.get("no_new_evidence", False):
             return "follow_up"
+
+        if use_tool_search:
+            return "tool"
+
+        if use_query_planner:
+            return "plan"
 
         if select_follow_up_query(state) is None:
             return "follow_up"
@@ -201,6 +219,13 @@ def mark_more_evidence_needed(state: InvestigationState) -> dict:
     """Mark an investigation as requiring further evidence."""
 
     _, reason = assess_next_step(state)
+
+    if state.get("tool_search_skipped", False):
+        reason = (
+            state.get("tool_stop_reason") or "The selected search tool was skipped."
+        )
+    elif state.get("planned_query") is None and state.get("planning_reason"):
+        reason = state["planning_reason"]
 
     return {
         "next_step": "needs_more_evidence",
