@@ -1,259 +1,239 @@
 # MaintainerLens Architecture
 
-> Reviewed against local source and Git state on 2026-10-28. The developer confirmed the default pytest suite and the focused PostgreSQL maintenance regressions passed after the Session-mock fixture correction. The assistant did not run those tests. Current remote CI, deployed code, service health and applied database revisions remain unverified. Implementation, local verification, merge and deployment are distinct states.
+MaintainerLens investigates public GitHub Issues using repository source and
+historical discussions. V1 is read-only. This document describes implemented
+components, their execution boundaries and the remaining integration work.
+See the [Roadmap](ROADMAP.md) for milestones and [ADRs](ADR/README.md) for decisions.
 
-Task 63 adds the whole-Graph application execution boundary described below. After correcting the three-round test fixture, the developer confirmed all tests passed. Aggregate counts/logs were not supplied, and the assistant did not execute pytest. This is local developer verification, not a live Worker–Graph E2E or observed CI.
+## System overview
 
-The [Worker–Graph integration contract](WORKER_GRAPH_INTEGRATION.md) describes the integration slices. The developer confirmed shared-schema, persistence and injected processor tests passed, and reports the result table was created. The processor composes Snapshot → Graph → result commit. HTTP result readback is now implemented with tests awaiting developer execution; default Worker wiring remains future work. No aggregate counts or optional-test logs were supplied.
-
-Use this document as a navigation map: select the relevant scenario below, read its entry point, callers and focused tests, then verify current signatures and Git changes. A new conversation normally needs a scoped read of those modules rather than another repository-wide audit. [Roadmap](ROADMAP.md) tracks planned milestones; [ADRs](ADR/README.md) explain architectural decisions. Update the relevant navigation row when changing an entry point or its contract.
-
-## 1. System Overview
-
-MaintainerLens is an asynchronous, evidence-grounded GitHub Issue investigation service for public repositories. V1 provides read-only server-side investigation, not IDE editing or automatic patches. Its current architecture has three implementation boundaries:
-
-| Boundary | Responsibilities | Current integration |
+| Boundary | Responsibility | Current integration |
 | --- | --- | --- |
-| Reliable task backend (M0–M2) | HTTP intake/readback, PostgreSQL tasks and Outbox, confirmed RabbitMQ publication, Worker execution, claims/leases, fenced Issue snapshots | Connected through the production entry points; the processor currently fetches and saves an Issue snapshot |
-| Knowledge services (M3) | Versioned source/document indexing, history collection/sync/enrichment, embeddings, retrieval and evaluation | Independently callable; Graph adapters reuse retrieval services; the production snapshot processor does not prepare or search knowledge |
-| Investigation workflow (M4) | Validated application input/result, whole-Graph deadline, bounded Graph, fenced result writer, injected business processor and HTTP result readback | Task 63/shared schemas/storage/processor passed developer verification; readback tests pending. Default Worker still uses the snapshot-only callback |
+| Reliable task backend | HTTP submission, transactional Outbox, RabbitMQ delivery, claims, leases and task status | Default Worker fetches and persists a public Issue snapshot |
+| Knowledge services | Source/document indexing, History ingestion, embeddings, retrieval and evaluation | Independently callable; Graph adapters reuse these services |
+| Investigation application | Validated input/result, bounded LangGraph, whole-Graph deadline, fenced result storage and business processor | Independently callable; default Worker has not switched to this processor |
+| HTTP readback | Task status, available Issue snapshot and optional completed investigation result | Implemented; legacy snapshot-only tasks legitimately return a null result |
 
-PostgreSQL owns business task state and persisted evidence. RabbitMQ transports at-least-once work signals. The existing `src/maintainer_lens/investigation_runner.py` owns task execution and leases; LangGraph owns investigation node/edge orchestration. These responsibilities must remain distinct.
+PostgreSQL is authoritative for task state and artifacts. RabbitMQ transports
+at-least-once work signals. The existing root-level
+[investigation runner](../src/maintainer_lens/investigation_runner.py) owns task
+claims, lease renewal and status transitions. LangGraph owns investigation
+nodes and edges. Redis currently has infrastructure/lifecycle integration;
+it is not an implemented Agent memory or retrieval cache.
 
-The API, Outbox Dispatcher and Worker are independent long-running Python processes. Compose also defines PostgreSQL 17/pgvector, Redis 7.4 and RabbitMQ 4.2, plus a one-shot Alembic migration service. Redis currently has infrastructure/lifecycle integration; it is not an implemented Agent memory, retrieval cache or distributed rate coordinator.
+FastAPI, the Outbox Dispatcher and Worker run as separate processes.
+[Compose](../compose.yaml) also provides PostgreSQL 17 with pgvector, Redis 7.4,
+RabbitMQ 4.2 and a one-shot Alembic migration service. Local Compose is a
+localhost-bound development setup, not a hardened public deployment.
 
-**Not implemented:** Default Worker-to-Graph processor wiring, final report generation, LangGraph checkpoint recovery, HITL, cross-investigation memory, multi-role Agent orchestration, private-repository authorization or approved GitHub writes. Result table creation/tests are developer-reported, not assistant-observed DB/CI checks. `draft_preliminary_report` is a routing marker, not a report generator.
+## Module navigation map
 
-## 2. Module Navigation Map
-
-Paths in the tables link to actual source/test files. Source paths are under `src/maintainer_lens/`; tests are under `tests/`. Search anchors are identifiers for targeted `rg` searches, not additional APIs. Read the focused tests before changing semantics; opt-in and mocked coverage are distinguished in Section 5.
-
-### Task backend and infrastructure
-
-| Change scenario | Primary entry points / symbols | Dependencies, callers and boundaries | Focused tests | Search anchors |
-| --- | --- | --- | --- | --- |
-| Submit an investigation or change HTTP readback | [API routes](../src/maintainer_lens/api/routes/investigations.py): `create_investigation`, `get_investigation`; [submission](../src/maintainer_lens/services/investigation_submission.py): `create_investigation_submission` | HTTP [schemas](../src/maintainer_lens/schemas/investigation_api.py); [detail query](../src/maintainer_lens/db/investigation_queries.py): `get_investigation_details`; [decoder](../src/maintainer_lens/db/investigation_results.py): `decode_investigation_result`. One SELECT reads task/snapshot/result; only succeeded artifacts are decoded/exposed. Legacy absent results remain null; corrupt/unsupported data yields safe HTTP 500 | [API](../tests/api/test_investigations.py), [complete readback tests](../tests/integration/test_investigation_result_readback.py), [submission atomicity](../tests/integration/test_investigation_submission.py) | `CreateInvestigationRequest`, `InvestigationDetailResponse`, `StoredInvestigationResultError` |
-| Deliver or recover Outbox events | [process](../src/maintainer_lens/outbox_dispatcher.py): `run_dispatcher_loop`; [service](../src/maintainer_lens/services/outbox_dispatcher.py): `dispatch_one_outbox_event` | [DB Outbox](../src/maintainer_lens/db/outbox.py): claim/token/lease and publication marking; publisher confirms precede DB marking; network publication holds no DB transaction | [Outbox ownership](../tests/integration/test_outbox.py), [Dispatcher](../tests/integration/test_outbox_dispatcher.py) | `claim_next_outbox_event`, `mark_outbox_published`, `delivery_token` |
-| Change delivery, retries, poison messages or ACK behavior | [handler](../src/maintainer_lens/messaging/handler.py): `handle_investigation_message_with_retry`, `process_investigation_request`; [consumer](../src/maintainer_lens/messaging/consumer.py): `consume_investigations` | [topology](../src/maintainer_lens/messaging/topology.py), [message schema](../src/maintainer_lens/messaging/schemas.py), [publisher](../src/maintainer_lens/messaging/publisher.py). Handler routes; Consumer alone ACKs after handler return | [routing](../tests/messaging/test_handler_retry.py), [deadline](../tests/messaging/test_retry_deadline.py), [ACK safety](../tests/messaging/test_delivery_safety.py), [broker E2E](../tests/integration/test_worker_e2e.py) | `ml-retry-attempts`, `ml-retry-not-before`, `InvalidInvestigationMessageError` |
-| Change task ownership, processor errors or cancellation | [runner](../src/maintainer_lens/investigation_runner.py): `execute_investigation_task`, `run_investigation_with_lease`, `maintain_investigation_lease`; [task DB](../src/maintainer_lens/db/investigation_tasks.py) | Worker/handler inject `processor(claim_token)`; runner owns fenced status transitions. Processor error classification is separate from heartbeat/finalization failures | [classification](../tests/test_investigation_error_classification.py), [TaskGroup](../tests/test_worker_taskgroup.py), [real DB recovery](../tests/integration/test_investigation_error_recovery.py), [task execution](../tests/integration/test_worker_execution.py) | `claim_token`, `LeaseLostError`, `_classify_processing_error` |
-| Change Issue fetching or snapshot writes | [investigator](../src/maintainer_lens/services/issue_investigator.py): `investigate_issue`; [snapshot DB](../src/maintainer_lens/db/issue_snapshots.py): `upsert_issue_snapshot` | Returns immutable `IssueSnapshotData` after commit/Session cleanup. New Graph processor consumes it; default [Worker](../src/maintainer_lens/worker.py) ignores the return and stays snapshot-only | [GitHub errors](../tests/services/test_issue_investigator_errors.py), [processor pipeline](../tests/integration/test_investigation_processor_pipeline.py), [snapshot fencing](../tests/integration/test_issue_snapshots.py), [production wiring](../tests/test_worker_production_wiring.py) | `GitHubRateLimitError`, `IssueSnapshotData`, `production_investigate` |
-| Change startup, settings or resource cleanup | [API lifespan](../src/maintainer_lens/main.py): `lifespan`; [Worker](../src/maintainer_lens/worker.py): `run_worker`; [settings](../src/maintainer_lens/core/config.py): `Settings`, `get_settings` | `AsyncExitStack`, [Session factory](../src/maintainer_lens/db/session.py): `create_session_factory`, independent HTTP/MQ resources; [Compose](../compose.yaml), [CI](../.github/workflows/ci.yml) | [lifespan](../tests/api/test_lifespan.py), [Worker startup](../tests/test_worker_startup.py), [settings](../tests/test_config.py) | `push_async_callback`, `expire_on_commit`, `publisher_confirms` |
-
-### Knowledge, retrieval and evaluation
-
-| Change scenario | Primary entry points / symbols | Dependencies, callers and boundaries | Focused tests | Search anchors |
-| --- | --- | --- | --- | --- |
-| Change GitHub access or public-repository enforcement | [GitHub client](../src/maintainer_lens/clients/github.py): `fetch_public_repository_metadata`, `fetch_github_issue`; [revision resolver](../src/maintainer_lens/clients/github_repository.py): `resolve_repository_revision` | History page/detail clients share the metadata guard. Tree/blob readers consume backend-selected revisions/manifests. Optional PAT changes authentication, not V1 public scope | [public policy](../tests/clients/test_public_repository_policy.py), [Issue client](../tests/clients/test_github.py), [revision client](../tests/clients/test_github_repository.py) | `private`, `fetch_repository_history_page`, `fetch_pull_request_details` |
-| Change source selection, download or chunking | [manifest](../src/maintainer_lens/services/repository_ingestion.py): `build_repository_manifest`; [download](../src/maintainer_lens/services/repository_sources.py): `download_repository_sources`; [chunker](../src/maintainer_lens/services/source_chunker.py): `chunk_repository_source` | GitHub Tree/Blob clients validate immutable content; [format policy](../src/maintainer_lens/core/source_types.py), [syntax registry](../src/maintainer_lens/services/syntax_registry.py). Language-specific analyzers stay separate from chunk-window policy | [ingestion](../tests/services/test_repository_ingestion.py), [Blob integrity](../tests/clients/test_github_blob.py), [download limits](../tests/services/test_repository_sources.py), [adaptive chunks](../tests/services/test_adaptive_chunker.py) | `fetch_repository_manifest`, `fetch_repository_blob`, `SYNTAX_ANALYZERS` |
-| Change Embedding provider/configuration | [client](../src/maintainer_lens/clients/embedding.py): `EmbeddingProvider`, `OpenAICompatibleEmbeddingClient`; [factory](../src/maintainer_lens/clients/embedding_factory.py): `create_embedding_client` | Source/history indexers and query retrievers share the protocol. Preserve provider/model/dimension compatibility and input-version semantics; caller owns HTTP client lifetime | [client](../tests/clients/test_embedding.py), [factory](../tests/clients/test_embedding_factory.py) | `embed_documents`, `embed_query`, `embedding_dimensions` |
-| Change source-index reuse, build concurrency or publication | [indexer](../src/maintainer_lens/services/repository_indexing.py): `build_repository_index`; [writer](../src/maintainer_lens/services/repository_index_writer.py): `write_repository_index`, `make_chunk_key` | [build lease](../src/maintainer_lens/services/repository_index_lease.py), [ORM](../src/maintainer_lens/db/models/repository_index.py). Build ownership differs from task ownership; chunks and ready status publish atomically | [build lease lifecycle](../tests/services/test_repository_indexing_lease.py), [ready reuse](../tests/services/test_repository_index_precheck.py), [writer fencing](../tests/integration/test_repository_index_writer_fencing_integration.py) | `RepositoryIndexBuildInProgress`, `owner_token`, `uq_repository_indexes_identity` |
-| Change Source ranking, exact matches or returned metadata | [search](../src/maintainer_lens/services/repository_search.py): `search_repository`; [hybrid](../src/maintainer_lens/services/repository_hybrid_search.py): `search_repository_hybrid`, `HybridSearchResult` | Query analysis → semantic/vector + optional keyword → RRF. Underlying services own sequential short transactions; Graph source adapter calls this existing entry point | [automatic search](../tests/services/test_repository_search.py), [hybrid](../tests/services/test_repository_hybrid_search.py), [pgvector](../tests/integration/test_repository_vector_search_integration.py) | `analyze_repository_query`, `search_repository_by_text`, `fuse_repository_rankings` |
-| Change History collection, incremental sync or backfill | [sync](../src/maintainer_lens/services/repository_history_sync.py): `sync_repository_history`; [backfill](../src/maintainer_lens/services/repository_history_backfill.py): `backfill_repository_history` | [bounded collection](../src/maintainer_lens/services/repository_history_collection.py) and [persistence](../src/maintainer_lens/services/repository_history_persistence.py). Sync watermark and backfill cursor differ; neither is a LangGraph checkpoint | [collection](../tests/services/test_repository_history_collection.py), [sync](../tests/integration/test_repository_history_sync.py), [backfill](../tests/integration/test_repository_history_backfill.py) | `completed_through`, `requested_since`, `RepositoryHistoryBackfillConflict` |
-| Change History details, embedding reuse or preparation | [enrichment](../src/maintainer_lens/services/repository_history_enrichment.py): `collect_repository_history_enrichment`, `save_repository_history_enrichment`; [indexer](../src/maintainer_lens/services/repository_history_indexing.py): `index_repository_history` | [small pipeline](../src/maintainer_lens/services/repository_history_pipeline.py): `prepare_repository_history`; parent records precede dependent details; no automatic embedding-refresh scheduler or sync-cursor advancement in this pipeline | [enrichment](../tests/integration/test_repository_history_enrichment.py), [reuse/isolation](../tests/integration/test_repository_history_semantic_search_integration.py), [pipeline](../tests/integration/test_repository_history_pipeline_integration.py) | `content_sha256`, `MAX_CONTENT_CHARS`, `documents_reused` |
-| Change History retrieval or provenance fields | [semantic](../src/maintainer_lens/services/repository_history_semantic_search.py): `search_repository_history_semantic`, `RepositoryHistorySemanticHit`; [keyword](../src/maintainer_lens/services/repository_history_search.py): `search_repository_history` | Semantic reads embedded content snapshots scoped by repo/provider/model/dimensions; keyword searches stored parents/comments. Graph adapters default to semantic | [semantic](../tests/integration/test_repository_history_semantic_search_integration.py), [keyword](../tests/integration/test_repository_history_search_integration.py) | `source_key`, `source_updated_at`, `cosine_distance` |
-| Change quality datasets, evidence anchors or metrics | [metrics](../src/maintainer_lens/evaluation/retrieval_metrics.py): `evaluate_repository_retrieval`; [comparison](../src/maintainer_lens/evaluation/retrieval_comparison.py): `compare_repository_retrieval` | Dataset loader and anchor resolution under the same package; [pinned source labels](../tests/fixtures/retrieval/sampleproject.json). Live evaluation requires explicit external-service opt-in | [pure evaluation](../tests/evaluation/), [DB anchor resolution](../tests/integration/test_retrieval_anchor_resolution_postgres.py), [live History benchmark](../tests/integration/test_repository_history_retrieval_quality_live.py) | `Recall@K`, `mrr_at_k`, `resolve_dataset_chunk_keys`, `EXTENDED_QUERIES` |
-
-### Investigation workflow and persistence contracts
-
-| Change scenario | Primary entry points / symbols | Dependencies, callers and boundaries | Focused tests | Search anchors |
-| --- | --- | --- | --- | --- |
-| Compose an existing claim into a durable Graph investigation | [business processor](../src/maintainer_lens/services/investigation_processor.py): `process_graph_investigation`; [task DB](../src/maintainer_lens/db/investigation_tasks.py): `get_claimed_investigation_identity` | Short read preflight → committed Snapshot data → Task 63 → result transaction commit → `None`. Clients/knowledge injected; original Runner owns leases/status/retries. No default Worker caller yet | [complete pipeline tests](../tests/integration/test_investigation_processor_pipeline.py): default real Graph/fake DB boundaries and opt-in PostgreSQL + real Runner; developer reports tests passed, optional-test logs not supplied | `requested_identity`, `PermanentInvestigationError`, `LeaseLostError` |
-| Change shared HTTP/application request or result models | [shared contracts](../src/maintainer_lens/schemas/investigation_contracts.py): `CreateInvestigationRequest`, `InvestigationInput`, `InvestigationResult` | Canonical model definitions; API/execution modules re-export existing names. No imports from HTTP schemas, execution service or graph composer; structural models do not replace execution-time provenance/routing validation | [contract/import regressions](../tests/test_investigation_contracts.py), [HTTP](../tests/api/test_investigations.py), [application](../tests/agents/test_investigation_application_execution.py) | `strict`, `extra`, `frozen`, `model_dump_json` |
-| Persist a validated Graph result under the existing claim | [result ORM](../src/maintainer_lens/db/models/investigation_result.py): `InvestigationResultRecord`; [DB helper](../src/maintainer_lens/db/investigation_results.py): `upsert_investigation_result`; [revision](../migrations/versions/c4b2a6d8e901_create_investigation_results.py) | New processor owns the result transaction. Snapshot payload before awaits; lock task, recheck DB-time ownership, compare identity, upsert. No task status change. ORM registered in `db/models/__init__.py` | [complete persistence tests](../tests/integration/test_investigation_result_persistence.py): developer confirmed table creation and tests passed; default Worker not wired | `schema_version`, `result_payload`, `clock_timestamp`, `with_for_update` |
-| Execute a complete investigation or change its application contract | [application boundary](../src/maintainer_lens/services/investigation_execution.py): `InvestigationInput`, `InvestigationResult`, `execute_graph_investigation` | Reuses the graph composer and injected dependency types; fresh State, one caller-supplied deadline, terminal validation. Owns no clients, DB transactions, task claims, retries or persistence; Worker is not a caller | [application execution](../tests/agents/test_investigation_application_execution.py) (developer-confirmed passing) | `analysis_evidence`, `InvalidInvestigationResultError`, `InvestigationDeadlineExceeded` |
-| Change Graph state, edges, rounds or stopping rules | [composer](../src/maintainer_lens/agents/investigation_graph.py): `build_investigation_graph`; [State](../src/maintainer_lens/agents/investigation/state.py): `InvestigationState`; [routing](../src/maintainer_lens/agents/investigation/routing.py): `make_analysis_router` | Injected searchers/analyzer; composer stays thin. Query Planner and tool strategy are mutually exclusive. Production Worker is not a caller | [routing](../tests/agents/test_investigation_graph_routing.py), [bounded loop](../tests/agents/test_investigation_graph_loop.py) | `max_search_rounds`, `no_new_evidence`, `next_step` |
-| Change Graph search adapters or Session ownership | [adapters](../src/maintainer_lens/agents/investigation/retrieval.py): `create_history_searcher`, `create_source_searcher`, search-node factories | Bind session factory/Embedding dependencies to `HistorySearcher` and `SourceSearcher`; Source ownership lookup must finish before M3 retrieval starts | [source adapter unit](../tests/agents/test_investigation_graph_source.py), [real Graph/pgvector regression](../tests/integration/test_investigation_source_searcher_postgres.py) | `session.begin`, `source_index_id`, `SourceSearcher` |
-| Change evidence identities, citations or structured analysis | [evidence](../src/maintainer_lens/agents/investigation/evidence.py): conversion/merge functions, `history_evidence_id`; [analysis node](../src/maintainer_lens/agents/investigation/analysis_node.py): `make_analysis_node`; [analyzer](../src/maintainer_lens/agents/investigation_analysis.py): `InvestigationAnalysis`, `create_llm_analyzer` | Findings cite only IDs actually supplied to the last completed analysis; saved excerpts survive skipped reanalysis and final reranking. Self-issue evidence is excluded; model feedback is not a validated finding | [analysis/citations](../tests/agents/test_investigation_graph_analysis.py), [application context](../tests/agents/test_investigation_application_execution.py), [merges](../tests/agents/test_investigation_evidence.py), [safety](../tests/agents/test_investigation_safety.py) | `allowed_ids`, `analysis_evidence`, `preliminary_analysis`, `evidence_ids` |
-| Change LLM follow-up query planning | [planner](../src/maintainer_lens/agents/investigation/query_planning.py): `create_llm_query_planner`, `make_query_planning_node`, `apply_planned_query` | Uses prior queries/analysis gaps; rejects empty, oversized or repeated queries; returns to fixed RAG nodes. Does not execute function calling | [planner](../tests/agents/test_investigation_query_planning.py) | `FollowUpQueryPlan`, `normalize_query`, `planned_query` |
-| Change model-selected tools, feedback or step timeout | [protocol](../src/maintainer_lens/agents/investigation/tool_calling.py): `run_search_tool_step`, `SearchToolArguments`; [adapter](../src/maintainer_lens/agents/investigation/tool_node.py): `create_tool_search_runner`, `make_tool_search_node`; [controls](../src/maintainer_lens/agents/investigation/execution.py): `with_tool_step_controls` | Backend fixes repo/index; exactly one allowed search per step. Merge selected-tool evidence directly; controls must be explicitly wrapped by caller | [protocol](../tests/agents/test_investigation_tool_calling.py), [compiled Graph](../tests/agents/test_investigation_graph_tool.py), [timeout/cancellation/logs](../tests/agents/test_investigation_execution.py) | `tool_call_id`, `tool_choice`, `last_tool_feedback`, `investigation_tool_step` |
-| Change persisted task/knowledge shape or result storage | [task ORM](../src/maintainer_lens/db/models/investigation.py); [result ORM](../src/maintainer_lens/db/models/investigation_result.py); [source ORM](../src/maintainer_lens/db/models/repository_index.py); [History ORM](../src/maintainer_lens/db/models/repository_history_embedding.py); [migrations](../migrations/versions/) | Check API schemas, guarded writers and [Alembic metadata](../migrations/env.py) together. Result ORM/revision now exist; graph state/result artifacts remain distinct from task status | [task transitions](../tests/integration/test_investigation_task_transitions.py), [result persistence](../tests/integration/test_investigation_result_persistence.py), [source schema](../tests/integration/test_repository_index_schema.py), [History persistence](../tests/integration/test_repository_history_persistence.py) | `InvestigationTask`, `InvestigationIssueSnapshot`, `InvestigationResultRecord`, `RepositoryIndex` |
-
-Example scoped lookup from the repository root:
-
-```bash
-rg -n 'create_source_searcher|search_repository_by_text|session.begin' \
-  src/maintainer_lens/agents/investigation/retrieval.py \
-  src/maintainer_lens/services/repository_semantic_search.py \
-  tests/integration/test_investigation_source_searcher_postgres.py
-```
-
-## 3. Critical Execution Flows
-
-### 3.1 Production HTTP → Outbox → RabbitMQ → Worker → snapshot
-
-1. `POST /investigations` validates repository syntax and a positive issue number. `create_investigation_submission()` creates `InvestigationTask` and `InvestigationOutboxEvent` in one transaction; it returns a typed message only after commit. HTTP responds 202. Public visibility is checked later by the GitHub client, not during submission.
-2. The independent dispatcher calls `dispatch_one_outbox_event()`. `claim_next_outbox_event()` uses `FOR UPDATE SKIP LOCKED`, a delivery token and a five-minute lease, then commits the claim.
-3. Outside a DB transaction, the dispatcher validates the event payload and publishes a persistent, mandatory-routed message over a publisher-confirm channel, with a 30-second publish deadline. It then marks publication in a new token/lease-guarded transaction. Failed publication schedules a retry (currently 60 seconds). A crash after broker confirmation but before DB marking can duplicate delivery.
-4. `run_worker()` assembles resources and the production `investigate_issue()` callback. Its consumer uses `prefetch_count=1`, sequential iteration and a channel separate from confirmed republishing.
-5. `consume_investigations()` awaits the handler. `build_investigation_message_handler()` connects `handle_investigation_message_with_retry()` → `process_investigation_request()` → `execute_investigation_task()`.
-6. The runner commits an atomic task claim and passes its new claim token to the processor. `TaskGroup` coordinates processing and periodic lease renewal through separate sessions.
-7. `investigate_issue()` calls the GitHub client, which verifies public repository metadata and validates the requested Issue identity (rejecting PR objects). No DB transaction spans these requests. The service maps rate limits/transient failures and constructs `IssueSnapshotData`.
-8. `upsert_issue_snapshot()` locks/validates task ownership and upserts by task ID in one transaction. The runner subsequently commits `succeeded` in another guarded transaction. `GET /investigations/{task_id}` reads task + optional snapshot + optional Graph result in one SELECT. Default snapshot-only tasks return `result: null`; a stored Graph artifact is decoded/exposed only for a succeeded task.
-9. The handler returns only after successful processing or confirmed retry/dead-letter publication. Consumer then ACKs. An ACK can mean successful routing of a failed attempt, not task success.
-
-**There is no call from this production chain into `build_investigation_graph()` or Graph `ainvoke()`.** The future connection is described in Section 6, not represented as an existing edge.
-
-### 3.2 Source indexing and retrieval
-
-```text
-build_repository_index
-  → resolve public default branch → pinned commit/tree
-  → ready-index lookup → build claim → ready-index recheck
-  → Tree manifest → bounded verified Blob downloads → adaptive chunks
-  → ordered embedding batches (no long DB transaction)
-  → token-fenced writer transaction → chunks + ready index → release build lease
-
-search_repository
-  → conservative code-identifier analysis
-  → search_repository_hybrid
-      → search_repository_by_text → query embedding → exact pgvector Top-K
-      → optional escaped ILIKE keyword search
-      → RRF → HybridSearchResult with provenance and ranks
-```
-
-The index identity is repo + commit + Embedding provider/model/dimensions + chunker version. `make_chunk_key()` hashes file/Blob identity, content, line span and structural metadata. A matching ready index avoids rebuilding/embedding; a concurrent build reports `RepositoryIndexBuildInProgress`. Build heartbeats and task heartbeats have different owners and tokens.
-
-Tree retrieval falls back from truncated recursive responses to bounded subtree traversal. Blob fetching verifies SHA, Base64, declared/actual size, recomputed Git Blob identity and UTF-8 text. Current download limits include 512 KiB per selected file, 8 MiB per batch and at most eight download workers. The format allowlist is broader than the syntax-analyzer set: Python/JS/TS/Go/Java use syntax hints, Markdown uses headings, and other allowed text/config formats use window fallback.
-
-Semantic search uses exact cosine distance; keyword search uses literal escaped `ILIKE`, not BM25. Semantic and optional keyword queries execute sequentially on one Session, then RRF fuses ranks (default constant 60). V1 has no HNSW, IVFFlat, reranker or separate search engine.
-
-### 3.3 History preparation and retrieval
-
-```text
-collect_repository_history → write/save_repository_history_batch
-sync_repository_history   → bounded updated-since scan → data + watermark commit
-backfill_repository_history → created-order pages → data + guarded cursor commit
-
-stored parent Issue/PR
-  → bounded comments/PR metadata enrichment → detail persistence
-  → index_repository_history → embed changed selected records → embedding upsert
-  → semantic search (default) or keyword search
-```
-
-These are separate callable operations. Incremental sync uses a default one-day overlap and advances `completed_through` only when pagination is exhausted. Backfill locks and checks its cursor before committing records/progress. Those checkpoints represent ingestion progress, not LangGraph state.
-
-`prepare_repository_history()` composes a small collect/enrich/index batch without advancing sync cursors. Parent rows precede dependent details; monotonic source timestamps prevent older ingestion from overwriting newer data. PR enrichment stores merge/head/base revisions and changed-file counts, not diffs or verified Issue-to-fix relationships.
-
-History embedding identity is repo + item/comment source key + provider/model/dimensions. Bodies are truncated to 5,000 characters; content hash/timestamp matching controls reuse. Indexing closes its read session before external embedding calls. Sync/enrichment does not automatically refresh embeddings. Semantic retrieval returns the embedded text snapshot, source URL and update time; keyword retrieval searches stored parent/comment text. No automatic full-history scheduler or refresh service is implied.
-
-### 3.4 Independently callable LangGraph workflow
-
-The application entry point is `execute_graph_investigation(request, *, history_searcher, analyzer, timeout_seconds, ...)`. Shared models live in `schemas/investigation_contracts.py`, with existing API/execution imports preserved through re-exports. `InvestigationInput` accepts only repository, Issue number/title/body, response language and optional Source index UUID; it inherits the shared submission repository/number validation. Required values and configuration fail before dependency execution. Source search requires a caller-selected index; knowledge preparation and dependency/client lifetimes belong to the caller. Planner/tool strategies and the 1–3 round budget reuse composer validation.
-
-The entry point compiles the existing graph, creates a fresh State from permitted request fields, and awaits the entire invocation inside one `asyncio.timeout`. Initial retrieval, analysis and every follow-up share that deadline. After invocation it validates a projected `InvestigationResult`, including unchanged request identity, required fields, structured analysis, terminal marker/rounds, all returned provenance and finding membership in the saved analysis context. The ready marker must agree with `assess_next_step()`; evidence insufficiency is a normal `needs_more_evidence` result. Internal query/tool controls are not exported as the application result.
-
-Returning that result does not persist it. The separate DB helper accepts the shared result model and writes its complete JSON payload under the task claim fence; the new business processor now calls it, while default Worker does not call that processor. Revision `c4b2a6d8e901` extends `789b1caf1332`; the developer reports table creation and persistence tests passed. This is result artifact storage, not a Graph checkpoint or final report-writing node.
-
-```text
-prepare_query → search_history → optional search_source → analyze_evidence
-                                                       │
-                  sufficient cited findings, no gaps ──┴→ ready marker → END
-                  otherwise, budget and evidence permit follow-up:
-                    deterministic query OR LLM query planner
-                      → fixed History/optional Source nodes → merge → analysis
-                    OR one LLM-selected search tool
-                      → selected retriever only → merge
-                      → novel evidence: analysis; duplicate/no novelty: stop
-                  exhausted budget / no useful query / no evidence → needs-more marker → END
-```
-
-`InvestigationState` holds explicit Issue context, language, evidence, rounds, prior queries, analysis and routing fields. The compiled Graph supports retrieval-only operation without an analyzer. Search rounds default to one and are restricted to 1–3. Planner and tool selection cannot both be configured. First-round empty retrieval stops without a model analysis request; no novel follow-up evidence skips repeat analysis.
-
-The analyzer validates `summary`, cited `findings`, `hypotheses` and `unanswered_questions`. Each analysis sees at most five History and five Source excerpts (1,600 content characters each); citation membership is checked against that exact input, not all accumulated State. The analysis node saves those excerpts as `analysis_evidence` after a successful validated analysis, records an empty list for the local no-evidence result, and retains the old context when reanalysis is skipped. The analyzer receives a separate copy to prevent request mutation from changing the saved context. Final validation resolves context IDs/categories/URLs against all returned records; it does not reconstruct the input from the final top five. A later retrieval can reorder or update the same History object, so saved excerpts need not equal its final text. Source URLs pin commit/path/lines; History URLs must match repo/object/comment identities. The investigated Issue and its comments are excluded from independent historical evidence. Legal IDs and URLs do not prove that a natural-language finding is supported.
-
-Tool calling validates one whitelisted `search_history`/`search_source` call and a strict bounded query. Repo/index/credentials remain backend-controlled. It sends the same `tool_call_id` back through `role=tool`, then requests final feedback with further tool calls disabled. The selected top-five records retain complete fields in State; excerpts sent to the model are bounded. `last_tool_feedback` is free text, not a verified finding. Query Planner instead proposes a query and returns to the fixed retrieval nodes.
-
-Tool selection/feedback caps are 600/500 output tokens; analysis and query planning also have per-request caps. A three-round tool workflow can make up to seven Chat requests plus embeddings. `with_tool_step_controls()` is explicitly applied by the caller (default 120 seconds), propagates cancellation and distinguishes its own deadline from upstream timeouts. Its logs contain execution metadata, not Issue/model/error-message content. It is not an entire-investigation deadline, a monetary budget or a guarantee that cancellation stops remote billing.
-
-### 3.5 Independently callable business processor
-
-`process_graph_investigation()` is an injected business operation under an existing task claim. It strictly validates repository/Issue, reads identity for running/token/DB-time lease in a short transaction, rejects mismatches before external calls and closes the Session. This read is not a long-held lock or authorization for future writes. It awaits the existing Issue service, which returns plain `IssueSnapshotData` only after fenced snapshot commit/cleanup, then constructs `InvestigationInput`, awaits Task 63 and commits a guarded result in another short Session. It maps a `False` result write to `LeaseLostError` and returns `None` only after commit. No client creation, knowledge build, task claim/heartbeat/status update or retry loop is added.
-
-When supplied as an existing Runner processor, that return permits the Runner's guarded success transaction. Default Worker still uses its original snapshot-only callback; test composition is distinct from production wiring. GitHub errors, dependency groups, lost leases and cancellation retain their existing propagation/policy. Graph input/options are validated at Task 63 after snapshot preparation; Graph timeout does not cover GitHub acquisition or result commit. A snapshot may legitimately remain after a later Graph/result failure.
-
-## 4. Critical Boundaries
-
-### 4.1 Transaction ownership and Sessions
-
-| Operation | Transaction / resource owner | Invariant |
+| Area | Entry points | Responsibility |
 | --- | --- | --- |
-| HTTP submission | `create_investigation_submission()` | Task and Outbox commit or roll back together; request does not directly publish |
-| HTTP detail readback | Request-scoped Session + `get_investigation_details()` | One nonlocking SELECT reads task/snapshot/result under one statement snapshot; refresh cached ORM objects. No commits, provider calls or graph reconstruction; Session cleanup releases the read transaction |
-| Outbox delivery | Dispatcher service + DB Outbox helpers | Claim transaction → confirmed network publish without transaction → guarded mark/retry transaction |
-| Task lifecycle | Existing runner + task DB helpers | Claim commits before processor; heartbeat and terminal transitions use independent short sessions/transactions |
-| Graph business orchestration | `process_graph_investigation()` | Owns preflight/read and result-write transaction scopes; closes reads before GitHub/Graph and returns only after result commit. Original Runner still owns task lifecycle; default Worker not switched |
-| Snapshot | Investigator service transaction + fenced DB writer | Required snapshot commit precedes task success; snapshot and success are not atomic together |
-| Graph result storage | Caller-owned Session/transaction + `upsert_investigation_result()` | Serialize before awaits, lock task, then recheck running/token/DB-time lease and identity; upsert without commit/status change. Caller must commit required output before returning to Runner |
-| Complete Graph application call | Caller owns injected clients/adapters; `execute_graph_investigation()` owns only its execution deadline and validation | No DB Session/transaction/client creation, knowledge preparation, task lifecycle or durable writes at this boundary; adapters retain their existing short transaction ownership |
-| Source build | Indexer, independent lease sessions, writer transaction | Network/embedding work outside publication transaction; writer locks active build lease before atomically publishing chunks/ready |
-| Graph Source adapter | `create_source_searcher()` and existing M3 services | Explicit ownership-check transaction must end before calling retrieval; downstream services own their own transactions |
-| History ingestion/indexing | Respective sync/backfill/enrichment/index services | Data/cursor consistency and monotonic updates; release read resources before embedding; no shared concurrent Session |
+| HTTP and submission | [routes](../src/maintainer_lens/api/routes/investigations.py), [shared contracts](../src/maintainer_lens/schemas/investigation_contracts.py), [submission](../src/maintainer_lens/services/investigation_submission.py) | Validate requests; persist Task + Outbox atomically; return typed details |
+| Delivery | [Dispatcher](../src/maintainer_lens/services/outbox_dispatcher.py), [handler](../src/maintainer_lens/messaging/handler.py), [consumer](../src/maintainer_lens/messaging/consumer.py) | Confirmed publication, retry/dead-letter routing and ACK ownership |
+| Task lifecycle | [runner](../src/maintainer_lens/investigation_runner.py), [task DB](../src/maintainer_lens/db/investigation_tasks.py), [Worker](../src/maintainer_lens/worker.py) | Claim/lease/status, error classification and process resource assembly |
+| Snapshot and Graph processor | [Issue service](../src/maintainer_lens/services/issue_investigator.py), [processor](../src/maintainer_lens/services/investigation_processor.py) | Commit snapshot data; optionally compose Graph execution and result commit under an existing claim |
+| Graph | [application entry](../src/maintainer_lens/services/investigation_execution.py), [composer](../src/maintainer_lens/agents/investigation_graph.py), [node modules](../src/maintainer_lens/agents/investigation/) | Fresh State, deadline, retrieval/analysis/controlled follow-up and final validation |
+| Source knowledge | [indexing](../src/maintainer_lens/services/repository_indexing.py), [search](../src/maintainer_lens/services/repository_search.py) | Commit-pinned indexes, build leases, exact semantic/optional keyword retrieval |
+| History knowledge | [preparation](../src/maintainer_lens/services/repository_history_pipeline.py), [sync](../src/maintainer_lens/services/repository_history_sync.py), [semantic retrieval](../src/maintainer_lens/services/repository_history_semantic_search.py) | Bounded collection/enrichment/indexing and repository-scoped evidence retrieval |
+| Result storage/readback | [ORM](../src/maintainer_lens/db/models/investigation_result.py), [writer/decoder](../src/maintainer_lens/db/investigation_results.py), [detail query](../src/maintainer_lens/db/investigation_queries.py) | Versioned JSONB artifact, claim fencing, strict decoding and one-statement detail reads |
 
-**Source Searcher regression:** `session.get()` can auto-begin a transaction. Previously the adapter called it without ending that transaction, then passed the same Session into `search_repository_by_text()`, which calls `session.begin()`. The repaired adapter puts the lookup and repo check inside an explicit short `session.begin()`, exits it, and only then invokes `search_repository()`. Do not wrap that entire call in the lookup transaction or use nested savepoints to hide conflicting transaction ownership. The real Graph/pgvector regression checks no active Session transaction during fake embeddings, errors, retries, rejection paths and cancellation cleanup.
+## Execution flows
 
-Share engines, session factories and suitably managed HTTP clients; give concurrent DB tasks separate Sessions. `create_session_factory()` uses `expire_on_commit=False`. Production entry points use `AsyncExitStack`/lifespan cleanup so partial startup and cancellation release acquired resources.
+### Default HTTP-to-Worker path
 
-### 4.2 Claims, leases, idempotency and ACK
+```text
+POST /investigations
+  → PostgreSQL: InvestigationTask + InvestigationOutboxEvent, one commit
+  → Dispatcher: claim → confirmed RabbitMQ publish → guarded publication mark
+  → RabbitMQ pending/retry/dead-letter queues
+  → Worker → existing Runner: claim commit + concurrent lease renewal
+  → public GitHub Issue fetch → fenced IssueSnapshot commit
+  → Runner: guarded task-success commit
+  → Handler returns → Consumer ACK
+```
 
-Task SQL atomically claims `pending` or expired `running` tasks with a fresh token. The lease is 15 minutes and default renewal interval is five minutes. Success/failure/release/renewal check task ID, status, token and PostgreSQL time. Task state SQL uses `statement_timestamp()`; Snapshot/Outbox checks use `clock_timestamp()`.
+The Worker still invokes `investigate_issue()` directly. It does not invoke the
+Graph processor. GitHub reads validate public visibility and Issue identity;
+network requests occur outside snapshot transactions. The service returns
+immutable `IssueSnapshotData` after commit and Session cleanup.
 
-Snapshot writing uses `FOR UPDATE` plus token/lease validation, then task-ID upsert. Source-index publication has its own build-lease lock and token; it does not reuse the investigation claim. These fences protect durable writes, not exactly-once remote computation. Snapshot existence alone does not establish completion, because task success commits separately.
+The handler can also return after confirmed retry/dead-letter forwarding.
+Consequently, an ACK can establish successful routing of an unsuccessful
+attempt; task completion is determined by PostgreSQL status.
 
-Result storage locks the task by ID first, then checks current status/token and `clock_timestamp()` in a separate statement, so a lease expiring during lock wait cannot authorize a new write. Repository/Issue must match the locked task. One JSONB result row per task preserves actual analysis excerpts and complete returned evidence; repeated valid writes update the payload/version and `updated_at`, retaining `created_at`. Positive-version and JSON-object checks are in both ORM metadata and migration. A `True` helper return only means SQL executed; caller commit is required. Result storage never marks a task succeeded, and result presence alone is not completion.
+### Knowledge preparation and retrieval
 
-Messages and queues are durable; publish/republish is persistent, mandatory-routed and confirmed. At-least-once duplicates are expected. Consumer alone ACKs after handler return; failed publication prevents normal ACK. Default business retries allow an initial attempt plus three retries. Pending/running claim contention is deferred without consuming execution attempts; missing tasks have a separate three-check bound. `not_before` defers processing, with retry queue TTL currently 60 seconds.
+Source preparation resolves public commit/tree/blob identities, downloads
+permitted content, creates syntax-aware chunks and embeds them into versioned
+ready indexes. Identity includes repository, commit, provider/model, dimensions
+and chunker version. Python, JavaScript/TypeScript, Go, Java and Markdown have
+structural chunking; supported text/config formats can use window fallback.
+Build claims and fenced transactional publication protect concurrent builds.
 
-### 4.3 Error and cancellation policy
+Source retrieval uses exact pgvector cosine search plus optional escaped
+`ILIKE` literal matching, fused with reciprocal rank fusion (default constant
+60). Queries execute sequentially when using one Session. V1 has no HNSW,
+reranker, BM25 or separate search engine.
 
-- HTTP result decoding raises `StoredInvestigationResultError` for unsupported versions, malformed/non-finite JSON, shared-model validation failures or task/repository/Issue mismatches. Only this error becomes HTTP 500 with a fixed content-safe message. Query failures and cancellation propagate through request Session cleanup. Unfinished tasks bypass decoding; legacy succeeded tasks without a row return null. Readback performs structural/identity checks, not a rerun of execution-time provenance/routing or semantic fact validation.
-- The independent Graph application maps only its own expired deadline to `InvestigationDeadlineExceeded(TimeoutError)`, using `timeout_scope.expired()` to distinguish an upstream timeout. An expired scope is checked again after normal return so swallowed deadline cancellation cannot produce success. External `CancelledError`, dependency errors, existing business/lease errors and exception groups propagate without blanket wrapping or retry. Cancellation remains cooperative and does not guarantee that remote computation stops.
-- Explicit analysis-return/citation failures and terminal validation use the shared `InvalidInvestigationResultError(ValueError)`. Analyzer invocation is outside local returned-data validation, so a `ValueError` raised by the analyzer itself retains its original identity. The new processor propagates these errors to the existing Runner when injected; default Worker has not switched to it.
-- Existing typed retryable/permanent processor errors retain their policy. The original runner recursively classifies ordinary processor `ExceptionGroup` leaves: invalid data (`ValueError`, including structured-output validation) and non-transient HTTP errors are permanent; HTTP 408/409/425/429/5xx, timeouts/network errors and unexpected processor failures use bounded retries. Any permanent member makes an ordinary processing group terminal; retryable groups retain the latest supplied `not_before`.
-- Retry/failed state commits before the classified error reaches the messaging handler. GitHub's business service preserves its more specific rate-limit deadline classification.
-- Lease-loss leaves bypass ordinary classification. The handler rereads authoritative status after plain or pure grouped lease loss: succeeded returns; pending/running defer; failed routes dead; missing uses bounded checks. A stale owner cannot release a replacement claim.
-- Mixed lease/other groups, heartbeat DB failures and finalization commit failures propagate; recovery may wait for lease expiry and redelivery. External `CancelledError` propagates without reporting success or deliberately releasing ownership. Future Graph integration must validate these policies against actual provider failures.
-- Invalid message JSON/schema and retry metadata route to dead; ACK still requires confirmed forwarding. Header/body errors are distinct from processor failures.
+History collection, incremental sync, resumable backfill, comment/PR enrichment
+and embedding refresh are separate bounded operations. The small preparation
+pipeline does not advance sync cursors. Embedding bodies are truncated to 5,000
+characters; content hashes and source timestamps control reuse. Semantic
+retrieval returns embedded text snapshots scoped by repository/provider/model/
+dimensions. Keyword retrieval is also available. PR enrichment is metadata,
+not a full diff or a verified Issue-to-fix relationship.
 
-### 4.4 Trust, identity and version boundaries
+Knowledge preparation is explicit; the investigation entry does not build
+indexes, ingest history or automatically refresh embeddings.
 
-Issue/history/comment/PR readers require metadata with `private` exactly `false` before reading content; source revision resolution reuses its metadata read for the same check. Missing/ambiguous visibility fails closed. Each content request adds a metadata request without caching visibility; enrichment counts include both. Tree/blob helpers accept backend-selected revisions/manifests. Visibility may change between requests; this is not private authorization or tenant isolation.
+### Complete Graph application call
 
-Retrieved text and model output are untrusted data. Tools require whitelist/schema checks and fixed backend permissions. Preserve repo/index boundaries and citation provenance; never promote tool feedback or unsupported hypotheses into verified findings. Source evidence is immutable-revision-based; History content can change. Future durable reports need the actual evidence version/text used, not only a mutable URL. Embedding-input/chunking changes require deliberate identity/version handling to prevent incompatible index reuse.
+`execute_graph_investigation(request, *, history_searcher, analyzer,
+timeout_seconds, ...)` uses the shared `InvestigationInput` and
+`InvestigationResult` models. Input contains repository, Issue number/title/body,
+response language and an optional Source index UUID. Callers cannot inject
+State evidence, findings, current rounds or routing controls. Source search
+requires a caller-selected index; the search-round budget is 1–3, and Query
+Planner and Tool Runner cannot both be configured.
 
-## 5. Verification Scope and Evaluation Limits
+The entry validates input/options, compiles the existing Graph and constructs
+a fresh State. One `asyncio.timeout` covers initial retrieval, analysis and
+all follow-up steps. Final validation projects a stable result rather than
+returning arbitrary internal State.
 
-The developer confirmed the default pytest suite passed after fixing the new runner test fixture: `factory()` must yield a Session whose `__aenter__` returns itself; `session.begin()` synchronously returns an async transaction context rather than a coroutine. The focused PostgreSQL maintenance group also passed. Final aggregate counts/logs were not supplied; these are developer-reported local results, not assistant-executed tests or observed CI.
+```text
+Initial History → optional Source → structured analysis
+  → sufficient cited findings, no gaps: draft_preliminary_report → END
+  → otherwise, if budget/query/evidence permit:
+      deterministic query or Query Planner → fixed retrieval nodes
+      OR model-selected tool → selected retriever only
+      → merge/deduplicate → analyze only when novel evidence appears
+  → exhausted budget / no useful follow-up / insufficient evidence:
+      needs_more_evidence → END
+```
 
-| Coverage layer | Evidence / limits |
+Each analysis uses at most five History and five Source excerpts, bounded to
+1,600 content characters each. `analysis_evidence` saves the exact latest
+completed analysis context; skipped reanalysis retains that context, and initial
+empty retrieval records an empty context without a model call. Final validation checks
+request identity, required fields, structured analysis, terminal values, rounds,
+repository/index provenance, citation IDs/URLs and finding membership in that
+saved context. Ready routing must agree with `assess_next_step()`.
+
+A later retrieval may reorder evidence or update a History object, so final
+rankings/text cannot reconstruct the earlier model input. Source URLs pin
+commit/path/lines. History URLs identify actual objects/comments; the investigated
+Issue and its comments are excluded as independent historical evidence. These
+checks do not establish semantic support for every model statement.
+
+Tool calling permits one validated `search_history` or `search_source` call per
+step. Repository/index/credentials remain backend-controlled. The real protocol
+returns the same `tool_call_id`; free-text tool feedback is not a finding.
+Caller-applied tool-step controls and the complete Graph deadline are separate.
+Neither is a monetary budget or a guarantee that remote cancellation stops billing.
+
+### Business processor under an existing claim
+
+`process_graph_investigation()` is ready for injection into the existing Runner:
+
+```text
+short transaction: validate active claim and task identity
+  → close Session
+  → await Issue service: public fetch + fenced snapshot commit
+  → build InvestigationInput from committed snapshot data
+  → await complete Graph application call
+  → short transaction: fenced result upsert + commit
+  → return None
+Existing Runner: guarded success commit
+```
+
+It creates no clients, prepares no knowledge and adds no claim/heartbeat/status
+machine or retry loop. Graph input/options are validated after snapshot
+preparation; the Graph deadline excludes GitHub acquisition and result commit.
+A snapshot may remain after later Graph/result failure. Default Worker resource
+assembly and callback replacement remain separate integration work.
+
+## Persistence, transactions and recovery
+
+Use independent Sessions for concurrent operations. Share engines, session
+factories and appropriately managed HTTP clients. `AsyncExitStack`/lifespan owns
+cleanup, including partially completed startup. Do not retain database
+transactions while awaiting GitHub, embeddings, LLMs or broker publication.
+The Source Graph adapter finishes its index-ownership lookup transaction before
+calling retrieval services that own their own transaction scopes.
+
+| Operation | Transaction boundary |
 | --- | --- |
-| HTTP result readback | Default isolated FastAPI/decoder/query tests cover complete typed payloads, terminal outcomes, hidden attempts, legacy null, invalid storage and cancellation/error cleanup. Opt-in PostgreSQL tests exercise actual joins, safe HTTP errors and committed status/payload visibility with cached ORM refresh. Tests supplied, developer execution pending; no provider/broker calls |
-| Business processor pipeline | Tests supply real compiled Graph with fake DB transaction boundaries and opt-in real PostgreSQL/Runner/Snapshot/result writes. Cover ordering, identity, normal/insufficient/empty results, failures/commit rollback, claim replacement and cancellation. GitHub/search/model dependencies are mocked; one heartbeat-loss case injects the signal. Developer reports tests passed; counts/optional-test logs not supplied; no Worker/broker E2E claim |
-| Fenced result storage | Tests cover offline registration/revision/serialization/errors and opt-in PostgreSQL schema, JSON round-trip, identity, transactions, stale-claim, lock-wait expiry and cancellation. Developer reports table creation and all tests passed; no counts/logs supplied; assistant did not apply migration or run tests |
-| Shared-schema extraction | Contract tests cover preserved class identities/validation/serialization and cold import order, without external dependencies. Developer confirmed tests and related regressions passed; no counts/logs supplied; assistant did not run pytest. This does not validate the later result-storage slice |
-| Task 63 application boundary | Real-compiled-Graph tests cover normal/insufficient/empty results, follow-up context, stage deadlines/cancellation/cleanup, upstream/dependency errors, input budgets and terminal rejection. Dependencies are fake; test-specific compiled graphs supply malformed terminal outputs. Developer confirmed all tests passed after the three-round fixture correction; no aggregate counts/logs were supplied; assistant did not run pytest |
-| Unit and compiled-Graph tests | Cover routing, citation rejection, query/tool validation, novelty, nested failures, lease handling, cancellation, poison-message ACK ordering and visibility; model/search dependencies are mocked |
-| Source adapter PostgreSQL regression | Real compiled Graph → adapter → existing M3 search → pgvector, with fake embeddings and isolated index cleanup; includes error/cancellation and transaction probes |
-| Processor PostgreSQL regression | Real task claims/status transactions with a fake publisher; not a live RabbitMQ/LLM Agent E2E |
-| Existing DB/broker integration suites | Opt-in fixtures cover ownership, outbox, snapshots and delivery; do not infer that every opt-in suite ran from a default pytest success |
-| Historical live LLM tests | Task 59 Query Planner and Task 60 function calling were reported successful; Tool Calling used mocked retrieval evidence. The live analyzer file also supplies controlled fake retrieval inputs |
-| Production Worker → real RAG → Graph → durable report | Not implemented or verified |
+| Submission | Task + Outbox commit together |
+| Outbox dispatch | Claim commit → network publish → guarded finalization commit |
+| Runner | Claim, heartbeat and terminal updates use independent short transactions |
+| Snapshot | Caller-owned short fenced write transaction |
+| Graph result | Serialize before awaits; lock task by ID, then recheck running/token/lease using a new PostgreSQL `clock_timestamp()` evaluation; compare identity; upsert; caller commits |
+| HTTP details | One nonlocking SELECT with two left outer joins reads task/snapshot/result; refresh cached ORM objects; request Session cleanup releases the read transaction |
 
-Source evaluation uses [eight bilingual questions](../tests/fixtures/retrieval/sampleproject.json) over a pinned tiny repository and only two independent targets. Historical Semantic and Automatic Hybrid Recall@5/MRR@5 were both 1.000; this does not establish Hybrid superiority or general Issue accuracy. Evaluation implementation is under `src/maintainer_lens/evaluation/`, not a root-level `evaluation/` directory.
+One result row per task stores schema version 1, complete JSONB output and DB
+timestamps. Upsert preserves creation time and replaces the payload/version.
+The [Alembic revision](../migrations/versions/c4b2a6d8e901_create_investigation_results.py)
+extends `789b1caf1332`; models are registered in `db/models/__init__.py`.
+A writer returning `True` means SQL executed, not that the transaction committed.
 
-The extended History benchmark has six labeled Issues, 34 dynamically fetched distractors and 14 queries. Historical semantic Top-1/Recall@5/MRR@5 were 92.9%/100%/0.964, versus keyword 57.1%/64.3%/0.607. Its live test prints metrics without enforcing those historical scores as fixed thresholds; corpus contents can change, relevance labels are incomplete, and it does not measure PR/comment ranking. HNSW/reranking changes require representative evidence of need.
+Snapshot/result commits and Runner success commit remain separate. A crash can
+leave artifacts on an unfinished task. Retries may repeat remote computation;
+existing artifacts are not checkpoints or computation caches. Fencing protects
+writes from stale owners, not exactly-once LLM execution.
 
-Keep ordinary mocks independent of `.env`; real DB, broker and paid-provider tests require their explicit flags. Inspect the selected test's prerequisites and cleanup before running it. A skipped test is not a verified integration, and local green tests do not establish merge or deployment.
+GET exposes a result only for `succeeded` tasks. Other states return null even
+if an earlier attempt committed a result. Legacy succeeded tasks without a row
+also return null. Decoder checks version, JSON/model structure and task identity;
+unsupported/corrupt stored results on successful tasks produce a fixed safe
+HTTP 500. GET does not rerun Graph provenance/routing or fact verification.
+Both Graph terminal values are valid successful outcomes after required commits.
+`draft_preliminary_report` is a marker, not a final report-writing node.
 
-## 6. Extension Points
+## Error and trust boundaries
 
-| Proposed change | Start with | Required contract before implementation |
-| --- | --- | --- |
-| Connect Graph to Worker | [integration contract](WORKER_GRAPH_INTEGRATION.md); `worker.run_worker()` callback, new `process_graph_investigation()`, existing Runner | Verify processor tests, approve runtime knowledge/profile and resources, then assemble dependencies and replace default callback. Reuse processor identity/snapshot/result boundaries and existing claim/lease policy. No second task runner/status engine |
-| Persist or expose investigation reports | [storage/readback contract](WORKER_GRAPH_INTEGRATION.md); shared contracts, result ORM/helper, task finalization, HTTP detail schema/query | Shared models/storage/processor passed developer verification. HTTP readback implemented, tests pending: expose only completed results, preserve legacy null results and reject corrupt/unsupported stored payloads. Final report generation remains separate |
-| Improve retrieval quality or provider compatibility | Existing Source/History search and Embedding protocol, then evaluation rows above | Preserve index/model/dimension/version isolation; measure recall/rank failure first; avoid concurrent calls on one Session |
-| Refresh more History or add source formats | Sync/backfill/enrichment/indexing separately; format policy + syntax registry/chunker | Keep bounded requests, monotonic writes, resumable cursors and embedding refresh explicit; do not silently equate a partial batch with full coverage |
-| Add a retrieval tool or follow-up strategy | Existing protocol/schema, tool-node adapter and graph composer | Backend fixes access context; validate one allowed call per step; preserve round/query budgets, novelty checks, citations and cancellation; no redundant fixed-node rerun after a tool |
-| Add durable workflow recovery, HITL or memory | Future M5 design around Graph compilation/State and existing task identity | A LangGraph checkpoint stores workflow state, not task ownership or broker ACK state. Define recovery/duplicate-cost behavior before enabling it |
-| Change schema, deployment or CI | ORM + migrations + API/writers/tests; Compose/lifespan + CI | Preserve resource cleanup and compatibility, verify actual migrations/check results, and keep secrets/local notes outside public artifacts |
+- Only the Graph's own expired deadline becomes `InvestigationDeadlineExceeded`.
+  `timeout_scope.expired()` distinguishes upstream timeouts and catches swallowed
+  deadline cancellation after normal return. External cancellation propagates.
+- Explicit invalid returned analysis/citations/terminal data use
+  `InvalidInvestigationResultError`; dependency errors retain their identity and
+  exception-group structure at the application boundary.
+- The existing Runner classifies ordinary processor exception groups recursively:
+  invalid data and non-transient HTTP errors are permanent; timeout/network/
+  transient HTTP and unexpected failures follow bounded retry policy. Existing
+  typed errors retain their policy. Permanent group members take precedence.
+- Plain/pure grouped lease loss triggers authoritative status rechecks in the
+  handler. A stale owner never releases a replacement claim. Mixed groups,
+  heartbeat DB errors, finalization failures and cancellation remain visible.
+- Invalid message bodies/retry headers require confirmed dead-letter publication
+  before ACK. Readback maps only `StoredInvestigationResultError` to its fixed
+  HTTP error; DB errors and cancellation propagate through Session cleanup.
+- Public metadata must explicitly report `private=false` before Issue/History/
+  comment/PR content reads. Text/model output is untrusted. Visibility checks
+  and fixed backend tool scope do not implement private-repository authorization.
 
-These are navigation and design constraints for future work. Task 63, shared schemas, result storage and business processor have developer-confirmed passing tests; table creation is developer-reported. HTTP readback is implemented with tests pending. After verification, the next recommended slice is agreement on the concrete Worker runtime profile and dependency assembly/wiring. The prior proposal for a competing `services/investigation_runner.py` is not accepted.
+## Verification and extension points
+
+Tests distinguish default isolated dependencies, real compiled Graphs with fake
+providers, opt-in PostgreSQL/broker integration and opt-in paid live-provider
+checks. See [test instructions](../README.md#integration-tests) and the focused
+[application](../tests/agents/test_investigation_application_execution.py),
+[persistence](../tests/integration/test_investigation_result_persistence.py),
+[processor](../tests/integration/test_investigation_processor_pipeline.py) and
+[readback](../tests/integration/test_investigation_result_readback.py) suites.
+CI infrastructure coverage is not a live Worker→Graph→provider E2E.
+
+Retrieval benchmarks are small: eight bilingual Source queries over two targets,
+and 14 History queries with six labeled targets plus 34 distractors. They do not
+establish general Issue accuracy, PR/comment ranking quality or a need for
+approximate search/reranking. Evaluation code is under
+[src/maintainer_lens/evaluation](../src/maintainer_lens/evaluation/).
+
+Next integration must select an explicit knowledge/language/budget/provider
+profile, assemble existing adapters/analyzer with process resource cleanup and
+switch the default Worker callback while preserving Runner/handler/ACK behavior.
+Source index selection/preparation needs an explicit policy. Final report
+writing, Checkpointer recovery, HITL, cross-run memory, cost accounting and private
+access remain future work; none replace the existing task lifecycle.

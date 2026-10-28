@@ -22,7 +22,7 @@ Source sample: eight bilingual queries against a tiny pinned `pypa/sampleproject
 
 Preserve independent, typed, callable search interfaces. LangGraph should orchestrate these services, never reimplement pgvector, Embedding, indexing or RRF inside graph nodes. Use separate AsyncSessions under concurrency, validate repository/index scope and check citation anchors before using retrieved text as evidence. Query/embedding format changes require deliberate index-version migration or rebuild.
 
-## October 28 source audit and maintenance (validation pending)
+## Retrieval and evidence boundaries
 
 - Source format detection includes additional text/config formats using window
   fallback; Python/JS/TS/Go/Java have syntax analyzers and Markdown has headings.
@@ -46,5 +46,6 @@ Preserve independent, typed, callable search interfaces. LangGraph should orches
 - Historical citation URLs must match the declared repository, object number
   and comment anchor. The investigated issue and its comments are excluded from
   independent history evidence. Citation validity does not prove entailment,
-  current freshness or immutable historical content; durable report evidence
-  snapshots remain future work.
+  current freshness or immutable historical content. Durable preliminary results
+  now preserve complete returned evidence and actual analysis excerpts; this
+  does not make mutable GitHub discussions immutable or establish factual support.

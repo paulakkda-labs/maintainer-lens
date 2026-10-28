@@ -1,6 +1,6 @@
 # MaintainerLens Roadmap
 
-> Reviewed against the local checkout on 2026-10-28. Local main is b1d1da0 (M3); feature HEAD is 2836ee5 (M4 base). Query-planning/tool modules and the maintenance changes remain working-tree changes. This review did not fetch remote state, run tests, or verify CI/deployment.
+> Updated 2026-10-28. Completed entries describe implemented capabilities; the remaining M4 work is default Worker integration, final report generation and explicit end-to-end verification. Milestone completion does not imply deployment.
 
 ## Product vision
 
@@ -8,18 +8,18 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 
 ## Milestone status
 
-| Milestone | Goal | Status as of handoff |
+| Milestone | Goal | Status |
 | --- | --- | --- |
 | M0 | Bootstrap, project conventions, FastAPI liveness | Completed/merged (historical) |
 | M1 | PostgreSQL, Redis, RabbitMQ, reliable Worker, CI | Completed/merged (historical) |
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
-| M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Present on local main at b1d1da0 (#8–#10); remote checks unverified |
-| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | **In progress** — Tasks 53–62 tested; **Worker integration not implemented** |
+| M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
+| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | **In progress** — Graph application, durable results and HTTP readback merged (#11); default Worker integration and final report generation pending |
 | M5 | Workflow checkpoints, state recovery, durable memory, HITL | Planned |
 | M6 | V1 release readiness, evaluation, security, Web UI | Planned |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
 
-**Definition of done:** Implementation + meaningful tests + any required real external verification + project docs + reviewed PR/green CI + squash merge. An isolated unit test success is not proof that the feature is running in the production Worker. The M4 feature branch and current CI need verification in Git.
+**Definition of done:** Implementation + meaningful tests + any required real external verification + project docs + reviewed PR/green CI + squash merge. An isolated unit test success is not proof that the feature is running in the production Worker.
 
 ## M0 — Project bootstrap — Complete
 
@@ -51,7 +51,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 
 - [x] GitHub Actions with lint/format/default tests and a separate disposable DB+broker integration job.
 - [x] Docker/Alembic/startup verification and package build.
-- [x] Historically observed green CI on completed PRs. **Do not extrapolate to the current unmerged branch.**
+- [x] Two CI jobs covering quality/package checks and disposable database/broker/startup integration. Paid provider tests remain opt-in.
 
 ## M2 — Public GitHub Issue intake and delivery — Complete
 
@@ -96,34 +96,47 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 
 ## M4 — Evidence-grounded LangGraph investigation — **In progress**
 
-### M4 implementation already tested, pending production integration
+### Implemented and merged
 
-User-confirmed Tasks 53–62 (some subtask IDs earlier than 53 are not fully documented in the provided handoff; verify source history rather than inventing task names):
+- [x] Separate modular Graph composition, typed State and reusable History/Source adapters.
+- [x] Structured cited analysis, bounded 1–3-round retrieval, query/evidence deduplication and early stopping.
+- [x] Deterministic follow-up, LLM Query Planner or validated model-selected search tools; Planner and Tool Runner are mutually exclusive.
+- [x] Actual function-calling protocol with whitelisted tools, fixed backend repository/index scope and matching `tool_call_id` feedback.
+- [x] Explicit tool-step deadlines and metadata-only observability.
+- [x] Stable `InvestigationInput`/`InvestigationResult` contracts and whole-Graph execution deadline with upstream timeout distinction and external cancellation propagation.
+- [x] Save the exact latest completed analysis context; validate terminal identity, provenance, citations, rounds and ready routing.
+- [x] Versioned JSONB result model, Alembic migration and lease-fenced upsert under existing task ownership.
+- [x] Injected business processor: claimed identity → committed Snapshot → Graph → committed result; reuse the original Runner for lifecycle/retries.
+- [x] HTTP completed-result readback, legacy null compatibility and explicit corrupt/unsupported artifact errors.
+- [x] Regression suites for transactions, exception groups, lease-loss routing, malformed deliveries, public visibility and evidence boundaries.
+- [x] Application/storage/processor/readback changes merged in PR #11 with maintainer-reported passing tests and CI.
 
-- [x] History search LangGraph node and source/history TypedDict State.
-- [x] Source RAG node and evidence provenance conversion.
-- [x] DeepSeek-compatible structured `InvestigationAnalysis`: summary, findings with checked evidence IDs, hypotheses and unanswered questions.
-- [x] Conditional ready/more-evidence routing.
-- [x] Bounded iterative retrieval, deduplication, early stop on no novel evidence, max rounds.
-- [x] Decompose graph: `investigation_graph.py` is a small graph composer, business functions in `agents/investigation/` modules.
-- [x] LLM follow-up Query Planner with strict structured output; passed a real DeepSeek Flash test (Task 59).
-- [x] Model-selected `search_source` / `search_history` using real function-calling protocol, validated tool schemas/authorization, `tool_call_id` tool results; passed a real DeepSeek API test with **mock retrieval data** (Task 60).
-- [x] Integrate model-selected search into LangGraph, retaining complete evidence and doing only selected follow-up search; passed mock graph regression tests (Task 61).
-- [x] Add single-tool-step timeout, cancellation correctness and metadata-only observability; passed tests (Task 62).
+Live Query Planner and tool-protocol checks used DeepSeek; the tool-protocol
+example used mocked retrieval evidence. Compiled-Graph and processor tests
+also use controlled provider responses. These do not establish a live default
+Worker→Graph→real retrieval/provider E2E.
 
-### M4 remaining — design with existing backend, not a replacement
+### Remaining integration and product work
 
-- [x] Review the local Worker, task runner, Outbox, lease DB code, Agent graph, migrations and tests (2026-10-28).
-- [ ] Run and review October 28 maintenance regressions: source-adapter transaction cleanup, processor exception classification, lease-loss routing, poison-message ACK ordering, public visibility, and historical provenance. Code and tests are prepared; no passing result is claimed.
-- [ ] Design the integration seam around **existing** `src/maintainer_lens/investigation_runner.py`, `services/issue_investigator.py`, `messaging/handler.py` and the DB state machine. Do **not** add a second investigation status engine.
-- [ ] Establish full-graph deadline/result validation in the **appropriate existing owner** or a purpose-specific collaborator only if needed; do not blindly implement the previously proposed Task 63 `services/investigation_runner.py` file.
-- [ ] Validate the maintenance error policy against the real Graph when Worker integration is designed. The current runner maps processor failures into bounded retry/permanent rules, preserves lease loss/cancellation, and leaves infrastructure/finalization failures visible; full Graph/Worker integration remains pending.
-- [ ] Define guarded persistence for analyzed findings, traceable report and final state. Never mark `succeeded` before necessary DB writes are committed and fenced by the valid claim token.
-- [ ] Wire one real public Issue through HTTP→Outbox→RabbitMQ→Worker→IssueSnapshot→LangGraph source/history RAG→structured report→HTTP readback. Explicitly identify mock/live components in tests.
-- [ ] Provide report citations that resolve to actual Issue/PR or immutable source commit/line anchors.
-- [ ] Complete docs, automated tests and CI, then PR/squash-merge M4.
+- [ ] Select the first Worker runtime profile: explicit language, Graph deadline,
+  round budget, provider settings and prepared knowledge policy.
+- [ ] Assemble existing retrieval/analyzer dependencies with process-owned cleanup
+  and switch the default Worker callback to `process_graph_investigation()`.
+- [ ] Verify startup failures, injected overrides, cancellation, provider errors,
+  commit-before-success and ACK/confirmed-forwarding behavior through that wiring.
+- [ ] Define explicit ready Source index selection/preparation and compatibility
+  checks before enabling Source in the production path.
+- [ ] Verify HTTP→Outbox→RabbitMQ→Worker→Graph→durable result→HTTP using isolated
+  real infrastructure and fake providers, then separately authorized live checks.
+- [ ] Implement final report generation; `draft_preliminary_report` is currently
+  a terminal routing marker and the stored artifact is a preliminary investigation.
+- [ ] Evaluate multi-source conclusions and citation support on representative
+  Issues; valid IDs/URLs alone do not prove semantic factual support.
 
-**M4 non-goals for now:** LangGraph Checkpointer, long-term cross-investigation memory, full HITL interrupt/recovery, and broad multi-agent orchestration; reserve them for M5 once the single workflow is correct.
+Do not introduce a second task runner or status machine. Preserve existing
+claims/leases, fenced required writes, bounded retries and ACK ownership.
+M4 remains open until its production integration and acceptance criteria are met.
+Checkpointer, cross-run memory, HITL and broad multi-agent orchestration remain M5.
 
 ## M5 — Durable workflow and human review — Planned
 
@@ -154,7 +167,7 @@ GitHub App installation and scoped access; private indexing isolation per author
 - Security: evidence provenance and model/tool data are untrusted; explicit whitelist, schema, and authorization; no accidental model tool side effects.
 - Tests in `tests/` (never `experiments/`), with significant concurrency/transaction/retry/routing/error assertions; paid API/e2e opt-in.
 - Feature branches and GitHub PR squash-merge only. Before any new implementation, establish current Git/CI status.
-- Keep `README.md`, this Roadmap, public ADR and private Chinese `.local/PROJECT_STATUS.md` synchronized on major acceptance milestones; public docs must not leak private settings.
+- Keep `README.md`, this Roadmap, public ADR and local development notes synchronized on major acceptance milestones; public docs must not leak private settings.
 
 ## Maintenance boundaries and remaining risks
 
@@ -166,10 +179,10 @@ counts, not a diff or a verified issue-to-fix relationship.
 
 Public repository metadata checks now precede issue/history/comment/PR content
 requests. Provenance checks and self-issue exclusion do not establish that every
-model statement is entailed by its citations. Durable evidence versions, complete
-report persistence, whole-Graph time/cost controls and duplicate-computation
-mitigation need later feature design. No HNSW, reranker, new status machine or
-new report schema is introduced by the maintenance changes.
+model statement is entailed by its citations. Complete result evidence and actual analysis excerpts are now persisted, with
+a whole-Graph deadline. Final report generation, monetary budgets, semantic
+fact verification and duplicate-computation mitigation remain future work.
+No HNSW, reranker or replacement task status machine is planned without need.
 
 The source benchmark lives in `tests/fixtures/retrieval/sampleproject.json`;
 evaluation code is under `src/maintainer_lens/evaluation/`. The extended history

@@ -4,15 +4,28 @@
 
 MaintainerLens is an Apache-2.0 project under active development. V1 targets **public GitHub repositories** and a read-only, server-side investigation experience: reliable asynchronous Issue intake; source/documentation and historical Issue/PR retrieval; bounded LangGraph reasoning; evidence-linked conclusions; and, in later milestones, durable workflow recovery, memory, and human review. It is not an IDE code-editing assistant or an automatic source patcher.
 
-## Development status (October 28, 2026)
+## Current capabilities
 
-- **M0–M2:** production HTTP→PostgreSQL transactional Outbox→RabbitMQ→Worker→GitHub Issue Snapshot→HTTP readback, tested end-to-end; existing `investigation_runner.py` provides DB claim/lease/fencing and safe status updates.
-- **M3:** source/documentation versioned indexing and retrieval plus history Issue/PR/comments ingestion and semantic retrieval, with small real-API retrieval benchmarks. Local `main` at `b1d1da0` includes the M3 indexing, hybrid retrieval, and history commits (#8–#10). Remote PR checks and deployment were not queried during the October 28 review.
-- **M4 in progress:** separately callable LangGraph structured investigation, source/history evidence, bounded loops, DeepSeek follow-up planning, real function calling, graph tool integration, and tool-level timeout/observability. **Tasks 53–62 are reported tested.** Live DeepSeek query planning and function-calling protocol tests succeeded, but the function-calling example used **mock retrieval evidence**.
-- **Important limitation:** The current **production Worker still invokes `services/issue_investigator.investigate_issue()` to fetch and save a snapshot**; it has **not yet been wired to the M4 LangGraph** as of the uploaded production code. There is no verified end-to-end Worker→Agent report path, report persistence, HITL, Checkpointer or cross-run memory. Do not interpret completed unit tests as deployed capabilities.
-- The October 28 maintenance changes repair source-adapter transactions, processor-error routing, poison-message handling, public-repository checks, and evidence boundaries. Regression tests are present but **await local execution by the developer**. The previously suggested separate `services/investigation_runner.py` Task 63 file is **not an accepted addition**.
+- **Reliable backend:** HTTP submission, transactional PostgreSQL Outbox,
+  confirmed RabbitMQ delivery, task claims/leases and fenced Issue snapshots.
+- **Knowledge retrieval:** versioned source/document indexes, historical
+  Issue/PR/comment preparation, semantic retrieval and optional source hybrid
+  retrieval, with small live retrieval benchmarks.
+- **Investigation application:** independently callable LangGraph investigation
+  with structured cited findings, bounded follow-up, whole-Graph deadlines,
+  cancellation handling and validated input/output.
+- **Durable results:** an injected Snapshot → Graph → result processor,
+  lease-fenced versioned JSONB storage and HTTP readback of completed results.
 
-Development details: [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) · [Architecture decisions](docs/ADR/).
+**Integration boundary:** the default Worker still fetches and saves an Issue
+snapshot through `services/issue_investigator.investigate_issue()`. It does not
+invoke the Graph processor yet. A default HTTP-submitted task therefore normally
+returns `result: null`. M4 remains in progress; final report writing, Checkpointer,
+HITL and cross-run memory are not implemented. A passing isolated Graph test or
+infrastructure CI job is not a live Worker-to-Graph investigation.
+
+[Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[Architecture decisions](docs/ADR/README.md)
 
 ## Architecture overview
 
@@ -51,56 +64,24 @@ Source retrieval uses **exact pgvector cosine search** (no HNSW in V1) with opti
 
 Initial source evaluation: eight bilingual queries (only two distinct relevant targets) achieved Recall@5 and MRR@5 of 1.000 for both source strategies. History evaluation: 40 candidate `encode/httpx` issues with 14 bilingual queries; semantic Top-1 92.9%, Recall@5 100%, MRR@5 0.964. **Small, incompletely representative tests are not population accuracy estimates.**
 
-## October 28 maintenance and validation
+## Investigation results
 
-The source Graph adapter completes its index-ownership lookup in a short
-transaction before calling the existing retrieval service. Embedding requests
-run after that transaction has ended. A real PostgreSQL/pgvector regression
-uses deterministic fake embeddings and isolated indexes; it does not call GitHub.
+`GET /investigations/{task_id}` returns task identity/status, an optional `issue`
+snapshot and an optional typed `result`. A completed Graph result includes the
+structured preliminary analysis, complete returned History/Source evidence,
+the actual latest analysis excerpts, terminal next step, search round and
+routing reason.
 
-The existing task runner classifies processor exceptions, including nested
-`ExceptionGroup` values: invalid data and non-transient HTTP failures are
-permanent; timeouts, network failures, transient HTTP failures and unexpected
-processor exceptions use the existing finite retry budget. Existing typed
-errors retain their policy; a permanent member makes a mixed processing group
-terminal. Lease loss and external cancellation never authorize stale status
-writes. The handler rechecks authoritative task status after lease loss, while
-mixed lease/infrastructure groups and database-finalization failures propagate.
-Malformed message bodies and retry headers are published to the dead queue;
-Consumer ACK still follows confirmed publication.
+Only `succeeded` tasks expose a stored result. Pending/running/failed tasks and
+legacy snapshot-only successes return `result: null`. Unsupported/corrupt stored
+results on a successful task produce HTTP 500 instead of silently hiding the
+error. GET does not invoke providers or backfill old tasks.
 
-Issue, history-page, comment-page and PR-detail clients require repository
-metadata with `private` exactly `false` before fetching content. Source revision
-resolution reuses its metadata request for the same check. Missing or ambiguous
-visibility fails closed. These checks add one metadata request per content
-request, without caching visibility; low-level tree/blob readers consume
-backend-selected revisions and manifests. Visibility can still change between
-requests; this is not private-repository authorization or tenant isolation.
-
-History evidence URLs must match their repository/object/comment IDs. The Graph
-excludes the current issue and its comments from independent historical evidence.
-Tool selection now has an explicit 600-token output cap; feedback retains its
-500-token cap. These bounds do not provide total cost accounting or stop remote
-billing after cancellation. History synchronization, detail enrichment and
-embedding refresh remain separate operations.
-
-Run from the repository root, with existing dependencies installed:
-
-```bash
-uv run ruff check .
-uv run ruff format --check .
-uv run pytest -q
-
-# Existing, migrated non-production PostgreSQL with pgvector is required.
-# No GitHub, LLM, embedding-provider or RabbitMQ calls in these two files.
-RUN_POSTGRES_INTEGRATION=1 uv run pytest -q \
-  tests/integration/test_investigation_source_searcher_postgres.py \
-  tests/integration/test_investigation_error_recovery.py
-```
-
-The maintenance test results and current GitHub CI are **pending**. Tool deadlines
-remain opt-in wrappers; the whole-Graph deadline, durable reports with evidence
-snapshots, Worker integration, and checkpoints are still future work.
+Both `draft_preliminary_report` and `needs_more_evidence` are legitimate Graph
+outcomes. Task success means execution and required writes completed, not that
+the investigation established a root cause. The ready marker does not generate
+a final report. See the [architecture](docs/ARCHITECTURE.md) for execution,
+validation and persistence boundaries.
 
 ## Requirements
 
@@ -279,6 +260,27 @@ test database during Outbox concurrency/delivery tests, because it can claim
 the events under test. Keep the infrastructure containers running, but stop
 the application containers when necessary.
 
+### Graph execution and result regression tests
+
+These tests use fake providers; they do not call paid LLM/embedding APIs.
+Database tests require the existing migrated non-production PostgreSQL instance.
+
+```bash
+# Isolated application, shared contracts and HTTP behavior
+RUN_POSTGRES_INTEGRATION=0 uv run pytest -q \
+  tests/test_investigation_contracts.py \
+  tests/agents/test_investigation_application_execution.py \
+  tests/api/test_investigations.py \
+  tests/integration/test_investigation_processor_pipeline.py \
+  tests/integration/test_investigation_result_readback.py
+
+# Actual PostgreSQL persistence/processor/readback; external providers mocked
+RUN_POSTGRES_INTEGRATION=1 uv run pytest -q \
+  tests/integration/test_investigation_result_persistence.py \
+  tests/integration/test_investigation_processor_pipeline.py \
+  tests/integration/test_investigation_result_readback.py
+```
+
 ### Repository retrieval evaluation
 
 The initial source evaluation dataset in `tests/fixtures/retrieval/sampleproject.json`
@@ -316,7 +318,7 @@ The workflow is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 It runs on `feat/**`, `fix/**`, and `docs/**` pushes, pull requests, updates to
 `main`, and manual workflow dispatch.
 
-The historical GitHub Actions configuration has **two independent CI jobs**:
+The workflow defines **two independent CI jobs**:
 
 1. **Lint, unit tests, and package:** Python 3.12, locked `uv` installation,
    Ruff lint/format, default pytest tests, and wheel/source-distribution builds.
@@ -350,7 +352,8 @@ replace the local Compose/full GitHub API smoke test.
 3. Save the returned `task_id` (HTTP **202 Accepted**, initial status `pending`).
 4. Call `GET /investigations/{task_id}` until `status` becomes `succeeded`.
 5. Confirm `issue` is non-null and contains the GitHub title, body, state,
-   source URL, and timestamps.
+   source URL, and timestamps. With the default snapshot-only Worker, `result`
+   remains null; this smoke test does not exercise the Graph processor.
 
 External GitHub availability and rate limits can affect completion time. If a
 request fails, inspect `docker compose logs -f api dispatcher worker`.

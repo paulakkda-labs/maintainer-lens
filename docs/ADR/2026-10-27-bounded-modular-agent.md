@@ -1,7 +1,7 @@
 # ADR: Modular, bounded, evidence-first LangGraph investigation
 
-- **Status:** Accepted for the current M4 implementation per user-confirmed tests; branch merge and production deployment **not verified**.
-- **Scope:** The standalone LangGraph investigation workflow and its retrieval/tool adapters.
+- **Status:** Accepted; application execution and durable result boundaries added 2026-10-28.
+- **Scope:** LangGraph investigation, its application boundary and preliminary result contract. Default Worker integration remains separate.
 
 ## Context
 
@@ -15,28 +15,36 @@ A single large graph file mixing orchestration, provider requests, evidence tran
 - Support distinct follow-up strategies, including an LLM Query Planner and actual model-selected `search_history` / `search_source` Function Calling; they should not independently cause redundant RAG searches on the same round.
 - Python, not the LLM, validates Tool Schema, JSON parameters, tool whitelist, trusted repository/Index context, and `tool_call_id` association. Limit the first Tool Calling integration to a single allowed retrieval call per step. Treat free-text Tool feedback as commentary, not a validated Finding.
 - Offer explicit caller-applied tool-step timeout and metadata-only logging wrappers, without swallowing cancellation or assuming remote costs stop immediately. The graph builder does not apply the wrapper automatically.
+- Execute a complete investigation through `services/investigation_execution.py:execute_graph_investigation()`: validate shared input/options, compile the existing Graph, create fresh State, apply one whole-Graph deadline and validate a stable result. Keep client ownership, knowledge preparation and task lifecycle outside this boundary.
+- Preserve the latest completed analysis input as `analysis_evidence`. Validate findings against that context and returned evidence, rather than reconstructing context from final rankings. Citation identity/URL checks do not establish semantic entailment.
+- Persist one versioned JSONB preliminary result per task through a claim-fenced writer. The injected business processor commits Snapshot and result before returning to the original Runner. Readback exposes an artifact only for a succeeded task, supports legacy null results and rejects unsupported/corrupt representations.
 
 ## Consequences
 
 - **Benefits:** Small testable units, explicit trust boundaries, less unnecessary retrieval work and more predictable cost.
-- **Costs:** More adapter interfaces and testing; additional integration work is needed to map graph failures and reports into the existing M2 Runner/Worker status, retry, lease and persistence contracts.
-- **Not decided yet:** Whole-graph runtime controller placement, persistent Checkpointer, HITL, full multi-agent roles or report DB schema. The previously suggested new `services/investigation_runner.py` is **not approved** because a distinct existing root-level investigation runner already owns task leases and business transitions.
-- **Verification scope:** M4 Tasks 53–62 tests user-confirmed; Task 59 and 60 real DeepSeek protocol tests succeeded, but Task 60's evidence search was mocked; production RabbitMQ Worker/Graph E2E remains pending.
+- **Costs:** More adapter interfaces and testing; default Worker assembly still needs to supply a concrete provider/knowledge profile while preserving existing lifecycle and delivery semantics.
+- **Ownership:** The root-level investigation runner remains the only claim/lease/status owner. The application boundary is not a competing task runner and adds no retry loop.
+- **Deferred:** Persistent Checkpointer, HITL, multi-agent roles, monetary budgets and final report generation. A stored preliminary investigation is not a generated final report or a checkpoint.
 
-## October 28 maintenance and validation boundary
+## Runtime and verification boundaries
 
 Tool selection has a 600-token output cap, and feedback has a 500-token cap.
 Each successful tool step makes two Chat requests before optional structured
 reanalysis; with three search rounds, up to seven Chat requests can occur.
-No whole-Graph deadline or monetary budget is implemented. Full evidence fields
+The application entry supplies a whole-Graph deadline, distinct from tool-step
+controls; no monetary budget is implemented. Full evidence fields
 are retained for the selected top five records, rather than for unlimited hits.
 History URL/identity checks and self-issue exclusion strengthen input boundaries;
 free-text feedback remains outside verified findings.
 
-`mark_ready_for_report` only sets a next-step marker. There is no report-writing
-node, report table, report HTTP response, or Worker-to-Graph wiring. The generic
-processor error boundary now exists in the original task runner, but actual
-Graph/Worker integration and provider-specific policies still need validation.
-New regression files cover source transactions, processing errors, cancellation,
-malformed deliveries, visibility and provenance. They are prepared for local
-execution; historical Task 53–62 results do not validate this modified revision.
+`mark_ready_for_report` only sets a next-step marker. Preliminary result storage
+and HTTP readback are implemented; a final report-writing node and default
+Worker-to-Graph wiring are not. Own deadline expiry is distinguished from
+upstream timeout using `timeout_scope.expired()`, including a check after normal
+return when a dependency swallowed timeout cancellation. External cancellation
+and dependency exception groups propagate at the application boundary.
+
+Regression coverage includes real compiled Graphs with fake providers and
+opt-in PostgreSQL persistence/Runner/readback tests. Historical live planner and
+function-calling checks used DeepSeek, but the latter used mock retrieval data.
+These checks do not establish a live default Worker-to-Graph E2E.
