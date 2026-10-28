@@ -11,7 +11,7 @@ See the [Roadmap](ROADMAP.md) for milestones and [ADRs](ADR/README.md) for decis
 | --- | --- | --- |
 | Reliable task backend | HTTP submission, transactional Outbox, RabbitMQ delivery, claims, leases and task status | Default Worker invokes the existing Graph processor under the original Runner |
 | Knowledge services | Source/document indexing, History ingestion, embeddings, retrieval and evaluation | Independently callable; Graph adapters reuse these services |
-| Investigation application | Validated input/result, bounded LangGraph, whole-Graph deadline, fenced result storage and business processor | Default Worker binds prepared History, optional explicit Source and bounded model-selected tools |
+| Investigation application | Validated input/result, bounded LangGraph, whole-Graph deadline, fenced result storage and business processor | Default Worker supports automatic Source/History preparation or explicit knowledge, then bounded model-selected tools |
 | HTTP readback | Task status, available Issue snapshot, completed result and derived Markdown report | Legacy snapshot-only tasks legitimately return null result/report |
 
 PostgreSQL is authoritative for task state and artifacts. RabbitMQ transports
@@ -36,10 +36,11 @@ localhost-bound development setup, not a hardened public deployment.
 | Snapshot and Graph processor | [Issue service](../src/maintainer_lens/services/issue_investigator.py), [processor](../src/maintainer_lens/services/investigation_processor.py) | Commit snapshot data; optionally compose Graph execution and result commit under an existing claim |
 | Graph | [application entry](../src/maintainer_lens/services/investigation_execution.py), [composer](../src/maintainer_lens/agents/investigation_graph.py), [node modules](../src/maintainer_lens/agents/investigation/) | Fresh State, deadline, retrieval/analysis/controlled follow-up and final validation |
 | Source knowledge | [indexing](../src/maintainer_lens/services/repository_indexing.py), [search](../src/maintainer_lens/services/repository_search.py) | Commit-pinned indexes, build leases, exact semantic/optional keyword retrieval |
-| Investigation Source selection | [selection boundary](../src/maintainer_lens/services/investigation_source_index.py), [adapter](../src/maintainer_lens/agents/investigation/retrieval.py) | Validate an explicit UUID against repository, ready status and full embedding identity; return immutable metadata, without building or choosing latest |
+| Investigation Source selection | [selection boundary](../src/maintainer_lens/services/investigation_source_index.py), [adapter](../src/maintainer_lens/agents/investigation/retrieval.py) | Validate an explicit or backend-selected UUID against repository, ready status and full embedding identity; return immutable metadata, without building or choosing latest |
 | History knowledge | [preparation](../src/maintainer_lens/services/repository_history_pipeline.py), [sync](../src/maintainer_lens/services/repository_history_sync.py), [semantic retrieval](../src/maintainer_lens/services/repository_history_semantic_search.py) | Bounded collection/enrichment/indexing and repository-scoped evidence retrieval |
 | Result storage/readback | [ORM](../src/maintainer_lens/db/models/investigation_result.py), [writer/decoder](../src/maintainer_lens/db/investigation_results.py), [detail query](../src/maintainer_lens/db/investigation_queries.py) | Versioned JSONB artifact, claim fencing, strict decoding and one-statement detail reads |
 | Human-readable report | [renderer](../src/maintainer_lens/services/investigation_report.py) | Pure Markdown derived from validated stored analysis and its actual citations |
+| Automatic intake/preparation | [URL contract](../src/maintainer_lens/schemas/investigation_url.py), [preparer](../src/maintainer_lens/services/investigation_preparation.py), [binding DB](../src/maintainer_lens/db/investigation_preparation.py), [Source spool](../src/maintainer_lens/services/repository_index_preparation.py) | URL identity, persisted limits, complete compatible index reuse/build and fenced prepared identity |
 | Knowledge budget | [contracts/presets](../src/maintainer_lens/schemas/investigation_budget.py), [submission](../src/maintainer_lens/services/investigation_submission.py) | Resolve profile once, persist immutable task intent snapshot, expose choices and stored limits without modifying Graph budgets |
 
 ## Execution flows
@@ -47,14 +48,15 @@ localhost-bound development setup, not a hardened public deployment.
 ### Default HTTP-to-Worker path
 
 ```text
-POST /investigations
+POST /investigations/from-url (automatic) or /investigations (explicit knowledge)
   → PostgreSQL: InvestigationTask + InvestigationOutboxEvent, one commit
   → Dispatcher: claim → confirmed RabbitMQ publish → guarded publication mark
   → RabbitMQ pending/retry/dead-letter queues
   → Worker → existing Runner: claim commit + concurrent lease renewal
-  → compare message/task repository, Issue and Source UUID
+  → compare message/task repository, Issue, requested Source UUID and preparation mode
   → optional Source metadata preflight, then public GitHub fetch + fenced Snapshot commit
-  → initial History + optional Source → analysis → bounded selected-tool follow-up
+  → automatic mode: prepare/reuse knowledge → validate index → fenced UUID binding
+  → initial History + enabled Source → analysis → bounded selected-tool follow-up
   → fenced result commit
   → Runner: guarded task-success commit
   → Handler returns → Consumer ACK
@@ -76,11 +78,25 @@ Source and structured analysis. The backend profile is Chinese, up to three
 search rounds, Top-5 per retriever, provider identity `openai-compatible`, a
 120-second whole-Graph deadline and a 60-second deadline per tool step. It binds
 Tool Runner, keeping Query Planner as an independent mutually exclusive option.
-History-only requests expose only `search_history`; explicit Source requests also
+Legacy History-only requests expose only `search_history`; explicit or automatic Source requests also
 expose `search_source`. Initial retrieval searches each enabled corpus once;
 subsequent steps call only the selected retriever and reanalyze only novel evidence.
-Embedding model/dimensions must match the selected knowledge. No automatic
-knowledge preparation, latest-index selection or fallback is performed.
+Embedding model/dimensions must match the selected knowledge. URL requests
+explicitly enable automatic preparation; lower-level requests do not. No arbitrary
+latest-index selection or cross-configuration fallback is performed.
+The Worker explicitly passes `thinking_enabled=False` to the existing analyzer,
+matching the tool protocol. Analysis defaults to 4,096 output tokens, with the
+positive-integer `max_output_tokens` factory argument available to application
+callers. Boolean/non-integer/non-positive values fail before dependency use;
+model-specific output/context limits remain the provider's responsibility.
+The default Worker uses this factory default. Prompts request clear, concise
+findings and uncertainty without fixed character/finding-count caps, preserving
+the full selected evidence context. Repository preparation and retrieval coverage
+are independent of this per-analysis generation budget. No single output limit
+establishes coverage of arbitrary repositories or semantic accuracy. These
+instructions do not restrict historical result schemas or make validity
+guarantees about provider output. `finish_reason=length` is rejected
+before JSON parsing, including otherwise valid JSON; no new retry is introduced.
 
 Separate GitHub, embedding and LLM HTTP clients keep transport settings and
 credentials apart. Their read timeouts are 15, 60 and 90 seconds respectively;
@@ -134,7 +150,8 @@ that an index is available or valid. API submission persists the selected UUID i
 publisher and Worker carry it without changing it. Missing fields in older
 messages mean NULL and must still match the database task. The processor checks
 all three identity fields before external work. Source metadata validation then
-runs in a separate short transaction before GitHub or paid retrieval. A building
+runs in a separate short transaction before GitHub or paid retrieval for explicit
+selections; automatic selections are validated after preparation. A building
 index uses existing bounded retries; failed/missing/foreign/incompatible indexes
 fail explicitly, with no History-only downgrade.
 [Schema tests](../tests/integration/test_investigation_task_source_index_schema.py)
@@ -151,8 +168,9 @@ retrieval returns embedded text snapshots scoped by repository/provider/model/
 dimensions. Keyword retrieval is also available. PR enrichment is metadata,
 not a full diff or a verified Issue-to-fix relationship.
 
-Knowledge preparation is explicit; the investigation entry does not build
-indexes, ingest history or automatically refresh embeddings.
+The standalone Graph execution entry does not prepare knowledge. URL-mode
+Processor preparation happens before Graph execution, through an injected
+preparer using Worker-owned clients. History sync/backfill remains independent.
 
 ### Complete Graph application call
 
@@ -161,7 +179,7 @@ timeout_seconds, ...)` uses the shared `InvestigationInput` and
 `InvestigationResult` models. Input contains repository, Issue number/title/body,
 response language and an optional Source index UUID. Callers cannot inject
 State evidence, findings, current rounds or routing controls. Source search
-requires a caller-selected index; the search-round budget is 1–3, and Query
+requires an application-selected index; the search-round budget is 1–3, and Query
 Planner and Tool Runner cannot both be configured.
 
 The entry validates input/options, compiles the existing Graph and constructs
@@ -205,19 +223,23 @@ Neither is a monetary budget or a guarantee that remote cancellation stops billi
 The default Worker injects `process_graph_investigation()` into the existing Runner:
 
 ```text
-short transaction: validate active claim and repository/Issue/Source UUID identity
+short transaction: validate claim, repository/Issue/requested UUID/mode; load saved auto budget
   → close Session; optional injected Source metadata validator in its own short scope
   → await Issue service: public fetch + fenced snapshot commit
-  → build InvestigationInput from committed snapshot data
+  → automatic/unbound: await Source + History preparation, validate UUID
+  → short transaction: bind prepared UUID under active claim, commit
+  → build InvestigationInput from snapshot and effective UUID
   → await complete Graph application call
   → short transaction: fenced result upsert + commit
   → return None
 Existing Runner: guarded success commit
 ```
 
-It creates no clients, prepares no knowledge and adds no claim/heartbeat/status
-machine or retry loop. Graph input/options are validated after snapshot
-preparation; the Graph deadline excludes GitHub acquisition and result commit.
+It creates no clients and adds no claim/heartbeat/status machine or retry loop.
+Automatic preparation uses the injected service and stored limits; a previously
+bound index is validated and reused without another preparation call. Graph
+input/options are validated after snapshot/preparation. Its deadline excludes
+GitHub snapshot acquisition, knowledge preparation and result commit.
 A snapshot may remain after later Graph/result failure. Production resources
 belong to the Worker, while adapters and processor retain their Session scopes.
 
@@ -312,7 +334,7 @@ explicitly seeds/indexes one genuine historical Issue, invokes the default
 Worker, checks committed artifacts before ACK and verifies GET readback. Request
 hooks now cap GitHub/embedding/Chat calls at 4/4/7; retries stay parked. It skips
 pre-existing repository History and cleans only its own inserted rows/resources.
-This fixture preparation does not add automatic ingestion to the Worker.
+That older fixture is distinct from the automatic-preparation Worker path.
 The maintainer reported a successful History-only live run on 2026-10-28,
 within the 4/2/1 request caps and with normal model completion. This verifies
 the bounded smoke scenario, not all retrieval quality or production deployment.
@@ -328,76 +350,131 @@ approximate search/reranking. Evaluation code is under
 [src/maintainer_lens/evaluation](../src/maintainer_lens/evaluation/).
 
 Source UUID propagation, bounded production Tool Runner and derived Markdown
-reports are now implemented; their new regression suites await maintainer execution.
+reports were merged in PR #13 with maintainer-reported passing tests.
 [Full-chain tests](../tests/integration/test_worker_graph_source_e2e.py) cover real
 PostgreSQL/MQ with fake providers, including POST/Outbox, both retrieval profiles,
 preflight rejection, pre-ACK durability and duplicate delivery. A separately gated
 paid Source+History fixture prepares one verified Source chunk and one History
 document itself, takes the writer-generated UUID into POST, cleans only its own
 index/data, caps requests at GitHub/embedding/LLM 8/6/7 and parks retries. This
-partial test index does not change production knowledge-preparation policy. GET runs through an in-process ASGI
+partial test index is excluded from automatic reuse by its unique chunker version. GET runs through an in-process ASGI
 app, not a separately deployed HTTP server. Supplying tests is not evidence they
 passed. Final quality/semantic evaluation and CI/review remain required before M4
 closure. Checkpointer, HITL, cross-run memory, monetary budgets and private access
 remain future work; none replace the task lifecycle.
 
-### Automatic preparation schema staged; execution not yet enabled
+### Automatic URL intake and knowledge preparation
 
-The task model stages `auto_prepare_knowledge` (non-null Boolean, database
-default false), `prepared_source_index_id` (nullable native UUID), and
-`knowledge_budget` (non-null versioned JSONB object), through
-[revision e8b3c7d9a204](../migrations/versions/e8b3c7d9a204_add_investigation_knowledge_preparation.py),
-which follows `d7e9f2a4b601`. The maintainer has not applied this revision, so
-budget storage was added to that same migration rather than a new revision.
-Existing rows/inserts receive legacy mode, no prepared index and the original
-standard-v1 budget snapshot. The original `source_index_id` preserves explicit
-caller choice; the prepared field is backend-owned. Neither UUID has a retention
-FK. Checks reject conflicting modes and non-object budget payloads.
+`POST /investigations/from-url` accepts only a canonical
+`https://github.com/owner/repository/issues/positive-number` URL (optional final
+slash) and a preparation profile. Userinfo, ports, query/fragment, encoded paths,
+PR links and internal execution fields are rejected. Parsing yields the existing
+repository/Issue identity; the submitted URL is never fetched directly. The
+original `/investigations` endpoint retains its lower-level explicit-knowledge
+contract. Neither endpoint waits for preparation or models.
 
-[Budget contracts](../src/maintainer_lens/schemas/investigation_budget.py) define
-strict, frozen snapshots with schema/profile versions. Counts and seconds are
-positive integers; unlimited limits are JSON null, with no mixed finite limits.
-`GET /investigations/budget-profiles` lists small/standard/large/unlimited choices.
-POST selects `knowledge_budget_profile` (standard by default); submission
-resolves it before opening a Session and commits the complete snapshot with Task
-and Outbox. The broker remains an identity signal, not a second configuration
-store. Task GET validates/returns the snapshot without looking up current presets;
-corrupt budgets return a fixed safe HTTP 500. A profile-version change must not
-reinterpret older stored limits. Legacy SQL defaults stay frozen independently
-of future application preset changes.
+The existing Task schema (`e8b3c7d9a204`, following `d7e9f2a4b601`) stores:
+`auto_prepare_knowledge` (default false), backend-only
+`prepared_source_index_id`, and the strict versioned `knowledge_budget` JSONB
+snapshot. No new migration/table is added. Mode checks prevent simultaneous
+automatic and explicit selection; UUIDs retain identity without retention FKs.
+The submission resolves the profile before its Session, then commits Task and
+Outbox together. Messages carry the requested identity and automatic flag, never
+a second budget configuration. Older messages default to false and must match
+the Task. Stored limits are consumed as-is on retries, independent of preset
+changes; corrupt budget data fails before external work.
 
-`InvestigationIdentity` contains only repo/Issue/explicit-index fields. HTTP
-submission adds profile choice; Graph input inherits identity directly, keeping
-budgets out of Graph State/result and preserving result JSONB schema version 1.
-Budget choice does not alter Graph's three-round/120-second limits or transport,
-content/provenance checks. The default remains 500 Source files, 8 MiB, 2,000
-chunks, three History parents and 900 preparation seconds. See the
-[profile table](../README.md#knowledge-preparation-budget-profiles) for all choices.
+[The preparer](../src/maintainer_lens/services/investigation_preparation.py) binds
+Worker-owned GitHub/embedding clients and Session factory. It runs Source then
+History under one preparation `asyncio.timeout`, separate from Graph. Timeout
+translation checks `expired()`; upstream timeouts, external cancellation, leases
+and exception groups keep their meaning. A dependency swallowing own timeout
+cancellation cannot produce success or continue into History. GitHub rate-limit
+HTTP responses reuse the existing retry-deadline classification. Existing Runner
+and Handler own retry/status/routing; no inner retry loop is introduced.
 
-Automatic execution remains unwired. The next integration must compare stored
-mode with delivery intent, consume the stored budget values, reuse compatible
-ready knowledge, adapt the in-memory/History services for unlimited preparation,
-and bind prepared identity under the original claim/lease fence. File/byte checks
-precede Blob downloads and chunk limits precede embedding. Result checks must use
-the effective selected UUID. Schema checks alone do not enforce ownership,
-immutability, readiness or budget execution. Do not manually enable automatic
-rows as a supported API. Paid verification stays on small repositories.
-[Schema tests](../tests/integration/test_investigation_knowledge_preparation_schema.py)
-and [snapshot tests](../tests/integration/test_investigation_budget_snapshot.py)
-cover isolated contracts/DDL/API behavior and opt-in PostgreSQL defaults,
-constraints, durability, retry preservation and rollback. Apply the revised
-migration before updated ORM usage; assistant-supplied tests await execution.
+Automatic Source resolves a pinned public default-branch revision and reuses only
+an exact ready index for repository/commit/provider/model/dimensions and stable
+complete-index version `investigation-auto-v1`. It does not pick arbitrary latest
+or partial smoke indexes. A ready match avoids Source download/embedding work,
+even if its corpus is larger than the new task's work budget. Missing indexes
+use the existing index lease/renewal/fencing protocol. Concurrent build ownership
+uses existing bounded task retries.
 
-### Product intake boundary still to implement
+The automatic build checks all selected manifest file counts/bytes before Blob
+requests. It verifies one Blob at a time, chunks and spools JSONL to a temporary
+directory, and checks total chunk count before any Source embedding. It embeds
+bounded batches into a second spool. The replayable writer validates before SQL,
+then inserts at most 50 ORM records per flush in one transaction and publishes
+ready only after completion and another lease check. Cooperative yields during
+spool validation allow cancellation and heartbeats. No external calls occur in
+that transaction. Failure rolls back the index; temporary files close/remove on
+success, failure or cancellation. The old direct in-memory build API remains
+available for existing callers; automatic unlimited mode bypasses its 8 MiB cap.
+Manifest/identity-key metadata remains proportional to corpus size; disk and
+infrastructure are finite. Allowlist, 512 KiB per-file selection, Blob SHA and
+existing tree traversal controls remain unchanged.
 
-The intended user-facing flow accepts an Issue URL and manages knowledge selection/
-preparation internally. Swagger currently exposes the lower-level repository/
-Issue/optional Source UUID contract, followed by GET polling for the report.
-Source UUIDs are generated when knowledge indexes are created; investigation task
-UUIDs are generated at submission. Neither requires the other to exist first.
-The current passing plumbing checks must not be described as implementing URL-only
-intake, automatic knowledge preparation or a finished user interface.
+History preparation selects recent Issue/PR parents in pages of at most five,
+persists parents/details with scoped Sessions, and reuses content-identical
+embeddings. A finite parent budget stops at that work scope; null pages until
+exhaustion. Per page, at most two parents receive one page of five comments;
+indexing uses at most ten stored comments per parent. This preserves the existing
+detail policy and does not claim full History synchronization or complete PR
+fix evidence. Network calls occur outside SQL transactions.
 
-The maintainer confirmed the bounded real Source+History POST/Outbox/Worker/GET
-smoke passed. Its fixture prepares one real Source chunk; this does not verify
-the future production automatic-preparation profile or URL-only intake.
+After both services complete, Processor validates Source metadata, locks the Task
+and checks fresh database time/token/lease before binding UUID. Binding the same
+UUID is idempotent; another UUID/mode/identity is rejected. A retry with a binding
+validates it and skips preparation/HEAD resolution. Before binding, a completed
+Source index or committed History page may remain after failure and be reused.
+These are reusable knowledge, not successful task artifacts. Claim loss can
+prevent binding even after external work; remote cancellation does not guarantee
+provider billing stops.
+
+The effective result index is `prepared_source_index_id` in automatic mode and
+requested `source_index_id` otherwise. The result writer locks the Task and fences
+against that effective identity; unbound automatic tasks cannot write results.
+GET validates the same effective identity and returns both requested/prepared
+fields plus the automatic flag, saved budget, structured result and deterministic
+Markdown. Results keep schema version 1; preparation budgets do not enter Graph
+State or its stable input/output. Successful corrupt/mismatched artifacts produce
+a safe fixed HTTP 500. Both Graph terminal outcomes remain legitimate.
+
+Default preparation limits are 500 selected Source files, 8 MiB, 2,000 chunks,
+three History parents and 900 seconds. Small/large/unlimited choices are described
+by `GET /investigations/budget-profiles` and the
+[profile table](../README.md#knowledge-preparation-budget-profiles). Unlimited
+removes only aggregate preparation caps/deadline, not Graph's three rounds/120
+seconds, tool's 60 seconds, transport or content checks. Preparation limits are
+per attempt rather than a cumulative monetary accounting system.
+
+### Automatic-path verification and M4 acceptance
+
+[Offline regressions](../tests/test_investigation_automatic_preparation.py) cover
+URL injection/shape, snapshots, actual compiled Graph composition, binding reuse,
+deadlines, upstream errors/groups, cancellation, spool cleanup, pre-embedding
+limits and null limits beyond the old 8 MiB cap.
+[Writer regressions](../tests/services/test_repository_index_spool_writer.py)
+check replay validation, SQL batch sizes and rollback before ready publication.
+[PostgreSQL tests](../tests/integration/test_automatic_investigation_binding.py)
+cover mode/budget authority, rollback, idempotency, stale/replaced/expired claims,
+lock-wait expiry, effective result UUID and GET corruption handling.
+[Full-chain tests](../tests/integration/test_worker_graph_source_e2e.py) add cold
+URL submission with actual build/History services, default Worker and simulated
+providers; a second task reuses the ready index and duplicate messages do not
+recompute. Finite-budget failure cannot publish a partial index.
+
+A separate `RUN_LIVE_AUTO_PREPARATION_SMOKE=1` small-repository test uses actual
+GitHub, embedding and LLM, with independently enforced operation/input/request
+caps. It submits no UUID and skips before touching pre-existing matching knowledge.
+It requires isolated test infrastructure and cleans only test-owned data; GET is
+in-process ASGI. See [commands](../README.md#automatic-url-intake-acceptance).
+The maintainer confirmed preceding local regressions/infrastructure checks and
+the automatic paid smoke passed on 2026-10-29. The latter investigated
+sampleproject Issue #225 from URL-only submission, used three rounds and returned
+`needs_more_evidence`, with GitHub/embedding/Chat requests 22/6/6, all HTTP 200
+and `stop`/`tool_calls` completions. The assistant did not independently run these
+tests. M4 closes after focused report/excerpt/citation quality review and the
+reviewed green-CI PR is merged. Valid provenance is not semantic fact verification. M5 recovery,
+HITL and memory, and M6 product UI remain outside this integration.

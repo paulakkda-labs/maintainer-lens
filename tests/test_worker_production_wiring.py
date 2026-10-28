@@ -420,6 +420,7 @@ class _Harness:
             )
         assert request.url.path == "/v1/chat/completions"
         assert payload["model"] == "test-analysis-model"
+        assert payload["thinking"] == {"type": "disabled"}
         assert "Simplified Chinese" in payload["messages"][0]["content"]
         if payload.get("tool_choice") in ("required", "none"):
             phase = "selection" if payload["tool_choice"] == "required" else "feedback"
@@ -482,6 +483,7 @@ class _Harness:
                     ]
                 },
             )
+        assert payload["max_tokens"] == 4096
         context = json.loads(payload["messages"][1]["content"])
         assert context["repository"] == REPOSITORY
         assert "history:item:3782" in {

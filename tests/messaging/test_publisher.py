@@ -49,6 +49,7 @@ async def test_publish_investigation_sends_persistent_message() -> None:
         "repository": repository,
         "issue_number": issue_number,
         "source_index_id": None,
+        "auto_prepare_knowledge": False,
     }
 
 

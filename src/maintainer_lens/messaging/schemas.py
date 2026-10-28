@@ -1,7 +1,8 @@
+from typing import Self
 from uuid import UUID
 
 from aio_pika.abc import AbstractIncomingMessage
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 RETRY_ATTEMPTS_HEADER = "ml-retry-attempts"
 
@@ -19,8 +20,15 @@ class InvestigationRequestedMessage(BaseModel):
     repository: str = Field(min_length=1)
     issue_number: int = Field(gt=0, strict=True)
     source_index_id: UUID | None = None
+    auto_prepare_knowledge: bool = Field(default=False, strict=True)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_preparation_mode(self) -> Self:
+        if self.auto_prepare_knowledge and self.source_index_id is not None:
+            raise ValueError("Automatic preparation cannot request an explicit index")
+        return self
 
 
 def parse_investigation_message(

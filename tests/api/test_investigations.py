@@ -99,6 +99,8 @@ async def test_get_pending_investigation_without_snapshot(
         status="pending",
         source_index_id=None,
         knowledge_budget=make_knowledge_preparation_budget().model_dump(),
+        auto_prepare_knowledge=False,
+        prepared_source_index_id=None,
     )
 
     query = AsyncMock(return_value=(task, None, None))
@@ -126,6 +128,8 @@ async def test_get_pending_investigation_without_snapshot(
         "source_index_id": None,
         "report_markdown": None,
         "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
+        "auto_prepare_knowledge": False,
+        "prepared_source_index_id": None,
     }
 
     query.assert_awaited_once_with(session, "task-001")
@@ -152,6 +156,8 @@ async def test_get_completed_investigation_with_snapshot(
         status="succeeded",
         source_index_id=None,
         knowledge_budget=make_knowledge_preparation_budget().model_dump(),
+        auto_prepare_knowledge=False,
+        prepared_source_index_id=None,
     )
 
     snapshot = SimpleNamespace(

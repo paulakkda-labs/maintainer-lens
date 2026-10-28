@@ -28,6 +28,10 @@ from maintainer_lens.schemas.investigation_budget import (
     KnowledgePreparationBudget,
     list_knowledge_budget_profiles,
 )
+from maintainer_lens.schemas.investigation_url import (
+    CreateInvestigationFromUrlRequest,
+    parse_issue_url,
+)
 from maintainer_lens.services.investigation_report import render_investigation_report
 from maintainer_lens.services.investigation_submission import (
     create_investigation_submission,
@@ -62,6 +66,29 @@ async def create_investigation(
         task_id=message.task_id,
         status="pending",
     )
+
+
+@router.post(
+    "/from-url",
+    response_model=CreateInvestigationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_investigation_from_url(
+    payload: CreateInvestigationFromUrlRequest,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+) -> CreateInvestigationResponse:
+    """Queue automatic preparation; return before any GitHub or model requests."""
+    identity = parse_issue_url(payload.issue_url)
+    message = await create_investigation_submission(
+        session_factory,
+        repository=identity.repository,
+        issue_number=identity.issue_number,
+        auto_prepare_knowledge=True,
+        knowledge_budget_profile=payload.knowledge_budget_profile,
+    )
+    return CreateInvestigationResponse(task_id=message.task_id, status="pending")
 
 
 @router.get("/budget-profiles", response_model=list[KnowledgePreparationBudget])
@@ -107,12 +134,20 @@ async def get_investigation(
     report_markdown = None
     if task.status == "succeeded" and stored_result is not None:
         try:
+            if task.auto_prepare_knowledge and task.prepared_source_index_id is None:
+                raise StoredInvestigationResultError(
+                    "Automatic task has no bound index"
+                )
             graph_result = decode_investigation_result(
                 stored_result,
                 task_id=task.id,
                 repository=task.repository,
                 issue_number=task.issue_number,
-                source_index_id=task.source_index_id,
+                source_index_id=(
+                    task.prepared_source_index_id
+                    if task.auto_prepare_knowledge
+                    else task.source_index_id
+                ),
             )
             report_markdown = render_investigation_report(graph_result)
         except (StoredInvestigationResultError, InvalidInvestigationResultError) as exc:
@@ -135,6 +170,8 @@ async def get_investigation(
         repository=task.repository,
         issue_number=task.issue_number,
         source_index_id=task.source_index_id,
+        auto_prepare_knowledge=bool(task.auto_prepare_knowledge),
+        prepared_source_index_id=task.prepared_source_index_id,
         knowledge_budget=knowledge_budget,
         status=task.status,
         issue=issue,

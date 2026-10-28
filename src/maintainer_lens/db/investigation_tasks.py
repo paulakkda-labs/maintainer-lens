@@ -65,6 +65,7 @@ async def get_claimed_investigation_identity(
     *,
     task_id: str,
     claim_token: str,
+    auto_prepare_knowledge: bool = False,
 ) -> tuple[str, int, UUID | None] | None:
     """Read identity for an active claim without holding a row lock.
 
@@ -80,6 +81,7 @@ async def get_claimed_investigation_identity(
             InvestigationTask.id == task_id,
             InvestigationTask.status == "running",
             InvestigationTask.claim_token == claim_token,
+            InvestigationTask.auto_prepare_knowledge.is_(auto_prepare_knowledge),
             InvestigationTask.lease_expires_at > func.clock_timestamp(),
         )
     )

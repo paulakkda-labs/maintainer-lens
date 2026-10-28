@@ -1,6 +1,6 @@
 # MaintainerLens Roadmap
 
-> Updated 2026-10-28. Earlier History-only smoke, Source metadata and task-schema tests passed per maintainer feedback. Source propagation, bounded production tools and derived reports are implemented with new tests awaiting execution. Bounded Source+History live smoke passed per maintainer feedback; preparation schema and selectable budget snapshots are staged, with contracts/API readback implemented. Broader quality acceptance and CI/review remain; implementation does not imply deployment.
+> Updated 2026-10-29. Worker/Source/tools/reports and budget contracts are merged in PR #13. The maintainer confirmed the earlier bounded Source+History smoke passed. URL-only intake, automatic preparation and fenced prepared-index binding are implemented on the follow-up branch; the maintainer confirmed local regressions/infrastructure checks and the automatic paid smoke passed. Report review and reviewed green CI/merge remain pending. Implementation does not imply deployment.
 
 ## Product vision
 
@@ -14,7 +14,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 | M1 | PostgreSQL, Redis, RabbitMQ, reliable Worker, CI | Completed/merged (historical) |
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
 | M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
-| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | **In progress** — Graph application/results/readback merged (#11); History-only Worker smoke passed per maintainer feedback; Source/tool/report integration implemented, new acceptance suites and quality closure pending |
+| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | **Review/merge pending** — Graph/results (#11) and Worker/Source/tools/report/budgets (#13) merged; URL intake/automatic preparation regressions and paid cold-start smoke maintainer-confirmed, report review and CI/merge pending |
 | M5 | Workflow checkpoints, state recovery, durable memory, HITL | Planned |
 | M6 | V1 release readiness, evaluation, security, Web UI | Planned |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
@@ -64,7 +64,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 - [x] Local host-mode real GitHub E2E (`encode/httpx#3712`) and Docker end-to-end (`pydantic/pydantic#13781`) success paths.
 - [x] Historical PR #7 merged using squash strategy.
 
-**Historical boundary:** M2 delivered snapshot-only processing. The current M4 Worker explicitly invokes the Graph processor with prepared History, optional explicit Source and bounded follow-up; legacy succeeded tasks are not backfilled.
+**Historical boundary:** M2 delivered snapshot-only processing. The current M4 Worker explicitly invokes the Graph processor with automatic or explicit knowledge and bounded follow-up; legacy succeeded tasks are not backfilled.
 
 ## M3 — Repository knowledge and retrieval — Complete per milestone tests
 
@@ -143,52 +143,64 @@ Worker→Graph→real retrieval/provider E2E.
   and offline/opt-in PostgreSQL schema tests. No new table or index-retention FK.
 - [x] Maintainer reported all task-schema tests passed; the assistant did not query the DB revision.
 
-### Expanded Source/tools/report integration implemented, acceptance pending
+### Worker/Source/tools/reports and budget contracts — merged
 
-- [x] Carry explicit UUID through API, atomic Task/Outbox, publisher, message and
-  Worker; compare repository/Issue/index at claimed preflight, fenced write and decode.
-- [x] Validate requested Source metadata before external work; building uses
-  existing bounded retries, failed/missing/foreign/incompatible selections fail.
-- [x] Bind Tool Runner with up to three rounds, 120-second Graph and 60-second
-  tool deadlines; expose Source only for explicit index requests. Stop duplicates
-  and non-novel searches without unnecessary analysis. Reject swallowed tool expiry.
-- [x] Derive bilingual Markdown reports from validated saved analysis/context,
-  preserving insufficiency, citations and literal untrusted text, without new LLM calls.
-- [x] Supply default offline regressions and opt-in real PostgreSQL/MQ full-chain
-  tests, plus bounded paid Source+History smoke with self-prepared fixture knowledge.
-- [ ] Maintainer executes expanded regressions and real-infrastructure/full-chain tests.
-- [x] Maintainer-confirmed bounded Source+History paid smoke passed, including
-  real preparation fixtures, POST/Outbox/default Worker and GET report checks.
-- [ ] Review actual conclusions/citations on representative Issues; IDs/URLs alone
-  do not prove truth.
-- [x] Stage automatic-preparation mode and backend-selected Source UUID in the
-  Task model/migration with database mode constraints; upgrade/tests pending.
-- [x] Add small/standard/large/unlimited preparation choices, strict versioned
-  snapshots, profile discovery and submit/readback contracts; keep Graph budgets separate.
-- [ ] Implement automatic preparation using the stored budget snapshot: default
-  Source 500 files / 8 MiB / 2,000 chunks / 900 seconds and three History parents;
-  support unlimited task-preparation limits without disabling transport/content/
-  Graph controls. Reuse exact compatible ready indexes; keep live tests small.
-- [ ] Implement the product intake layer: Issue URL parsing and bounded backend-managed
-  knowledge preparation/selection, without requiring user-supplied index UUIDs.
-- [ ] Complete final quality review, documentation reconciliation, CI and reviewed PR.
+- [x] Carry explicit UUID through API, atomic Task/Outbox, message and Worker;
+  validate repository/Issue/index at preflight, fenced result write and decode.
+- [x] Enable bounded Tool Runner: at most three rounds, 120-second Graph,
+  60-second tool step, duplicate/non-novel early stopping and expiry checks.
+- [x] Derive bilingual Markdown from saved validated analysis and actual context,
+  preserving insufficiency without extra inference.
+- [x] Add task preparation mode/backend-selected UUID and strict persisted
+  small/standard/large/unlimited budgets. Existing Alembic head: e8b3c7d9a204.
+- [x] Maintainer-confirmed regressions and bounded real Source+History
+  POST/Outbox/Worker/GET smoke passed. Git contains squash merge PR #13.
 
-Do not introduce a second task runner or status machine. Preserve existing
-claims/leases, fenced required writes, bounded retries and ACK ownership.
-M4 remains open until its production integration and acceptance criteria are met.
-Checkpointer, cross-run memory, HITL and broad multi-agent orchestration remain M5.
+The earlier paid fixture prepared one verified Source chunk and one History
+record. It proves that explicit-index full-chain path, not automatic cold start
+or general semantic accuracy. The assistant did not independently run it or
+query the current database revision/CI.
 
-### PR and M5 entry criteria
+### URL intake and automatic preparation — maintainer-confirmed tests passed
 
-A staged M4 PR can land the implemented Worker/Source/tools/reports and budget
-contracts after the revised migration, relevant regressions and CI/review pass.
-Merging that slice does not complete M4. Closing M4 additionally requires URL-only
-submission, backend automatic preparation using persisted limits, fenced selected
-identity/retry behavior, end-to-end acceptance from unprepared knowledge and a
-focused report/citation quality review. Finish documentation and reviewed green-CI
-PR(s), then squash merge and synchronize main before starting M5 work. The Web UI
-remains M6 and is not an M4 gate. No calendar estimate or unobserved CI status is
-implied by this checklist.
+- [x] Strict `POST /investigations/from-url`: accept a canonical public GitHub
+  Issue URL and optional preparation profile, without requiring an index UUID.
+- [x] Carry automatic intent through Task/Outbox/message and compare DB mode;
+  read saved budget values before external work rather than resolving presets.
+- [x] Reuse exact complete compatible Source indexes, or build a pinned index
+  under existing Source leases. Check files/bytes before Blob requests and all
+  chunks before Source embeddings; never silently truncate to a Source budget.
+- [x] Spool source/vector content and batch SQL inserts; unlimited removes
+  aggregate preparation limits without removing transport/content/Graph controls.
+- [x] Prepare recent History parents in pages, reusing unchanged embeddings;
+  preserve the existing bounded per-page detail policy without claiming full sync.
+- [x] Apply preparation deadline separately from Graph; propagate cancellation,
+  distinguish upstream timeout and reject swallowed own-deadline cancellation.
+- [x] Bind backend-selected UUID once under claim/lease fencing; revalidate and
+  reuse an existing binding on retry. Compare effective UUID at result write/GET.
+- [x] Supply complete offline, real PostgreSQL/MQ cold-start/reuse and independently
+  gated small paid automatic smoke tests; update public architecture/operations/ADR.
+- [x] Maintainer reports preceding local regressions and real-infrastructure checks passed.
+- [x] Maintainer-confirmed automatic cold-start paid smoke passed: sampleproject
+  #225, three rounds, needs_more_evidence, GitHub/embedding/Chat 22/6/6, HTTP 200
+  and normal stop/tool_calls completions. The assistant did not execute the tests.
+- [ ] Inspect actual report statements against returned excerpts and immutable
+  Source links; record limitations without treating valid citations as truth.
+- [ ] Reviewed PR, green CI, squash merge and synchronized main.
+
+Default preparation is 500 selected Source files, 8 MiB, 2,000 chunks, three
+History parents and 900 seconds. Unlimited applies only to preparation task
+limits; Graph remains three rounds/120 seconds. Web UI remains M6. No new task
+runner/status machine, Checkpointer, HITL, cross-run memory or monetary system
+is added here.
+
+### M4 closure and M5 entry
+
+The remaining M4 backend code can be reviewed as this one slice. M4 stays open
+until its new acceptance suites and focused report/citation review pass and the
+reviewed green-CI PR is merged. Then synchronize main before creating the M5
+branch. M5 owns durable Graph checkpoint/recovery and human review; PostgreSQL
+task ownership and RabbitMQ delivery semantics remain authoritative.
 
 ## M5 — Durable workflow and human review — Planned
 

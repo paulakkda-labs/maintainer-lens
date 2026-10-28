@@ -19,6 +19,7 @@ def create_investigation_message(
     repository: str,
     issue_number: int,
     source_index_id: UUID | None = None,
+    auto_prepare_knowledge: bool = False,
 ) -> aio_pika.Message:
     """Create a persistent JSON message for an investigation task."""
     payload = InvestigationRequestedMessage(
@@ -26,6 +27,7 @@ def create_investigation_message(
         repository=repository,
         issue_number=issue_number,
         source_index_id=source_index_id,
+        auto_prepare_knowledge=auto_prepare_knowledge,
     )
     message_body = payload.model_dump_json().encode("utf-8")
     message = aio_pika.Message(
@@ -44,6 +46,7 @@ async def publish_investigation(
     repository: str,
     issue_number: int,
     source_index_id: UUID | None = None,
+    auto_prepare_knowledge: bool = False,
 ) -> None:
     """Publish an investigation request to RabbitMQ."""
     message = create_investigation_message(
@@ -51,6 +54,7 @@ async def publish_investigation(
         repository=repository,
         issue_number=issue_number,
         source_index_id=source_index_id,
+        auto_prepare_knowledge=auto_prepare_knowledge,
     )
 
     await exchange.publish(

@@ -290,6 +290,8 @@ async def test_readback_preserves_a_historical_profile_version_and_values(monkey
         status="pending",
         source_index_id=None,
         knowledge_budget=deepcopy(stored),
+        auto_prepare_knowledge=False,
+        prepared_source_index_id=None,
     )
     monkeypatch.setattr(
         routes, "get_investigation_details", AsyncMock(return_value=(task, None, None))
@@ -311,6 +313,8 @@ async def test_invalid_stored_budget_yields_safe_integrity_error(monkeypatch, co
         status="pending",
         source_index_id=None,
         knowledge_budget=corrupt,
+        auto_prepare_knowledge=False,
+        prepared_source_index_id=None,
     )
     monkeypatch.setattr(
         routes, "get_investigation_details", AsyncMock(return_value=(task, None, None))

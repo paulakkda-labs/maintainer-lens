@@ -12,11 +12,13 @@ Keep context, decisions and consequences here. Development branch names, test-se
 | [2026-10-27-investigation-lease-fencing.md](2026-10-27-investigation-lease-fencing.md) | Accepted (historical) | Atomic database claims, claim tokens, expiring leases and guarded writes |
 | [2026-10-27-versioned-source-and-history-rag.md](2026-10-27-versioned-source-and-history-rag.md) | Accepted (historical) | Commit-pinned source and separate history retrieval; exact pgvector, selected hybrid |
 | [2026-10-27-bounded-modular-agent.md](2026-10-27-bounded-modular-agent.md) | Accepted | Modular bounded LangGraph, application execution boundary and durable preliminary results |
-
 | [2026-10-28-source-selection-and-derived-reports.md](2026-10-28-source-selection-and-derived-reports.md) | Accepted | Explicit Source identity across delivery/storage, bounded Worker tools and derived reports |
 
+| [2026-10-28-automatic-investigation-preparation.md](2026-10-28-automatic-investigation-preparation.md) | Accepted | URL intake, persisted preparation budgets, complete Source reuse/build and fenced prepared identity |
+
 Checkpoint recovery, HITL and private-repository access remain future design work.
-The Worker binds prepared History, optional explicit Source and bounded tools;
-GET derives a Markdown report without extra inference. The original task runner,
-status table, claim fencing and ACK semantics remain authoritative. New Source/
-full-chain acceptance is separate from implementation and the earlier History smoke.
+The Worker supports automatic preparation as well as explicit knowledge selection;
+GET derives Markdown without extra inference. The original Runner, task status,
+claim fencing and ACK semantics remain authoritative. Automatic cold-start
+acceptance was separately confirmed by the maintainer on 2026-10-29; report review
+and reviewed green CI/merge remain milestone gates.

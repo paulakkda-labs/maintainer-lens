@@ -101,6 +101,7 @@ async def test_analyzer_sends_request_and_parses_structured_output() -> None:
     assert payload["model"] == "test-model"
     assert payload["response_format"] == {"type": "json_object"}
     assert payload["stream"] is False
+    assert payload["max_tokens"] == 4096
     assert payload["messages"][0]["role"] == "system"
 
     user_data = json.loads(payload["messages"][1]["content"])
@@ -141,7 +142,12 @@ async def test_analyzer_rejects_invalid_analysis_schema() -> None:
             await analyzer(_analysis_request())
 
 
-async def test_analyzer_rejects_truncated_generation() -> None:
+@pytest.mark.parametrize(
+    "content",
+    ["{}", json.dumps(_valid_analysis())],
+    ids=["missing-fields", "otherwise-valid-json"],
+)
+async def test_analyzer_rejects_truncated_generation(content: str) -> None:
     def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -150,7 +156,7 @@ async def test_analyzer_rejects_truncated_generation() -> None:
                     {
                         "finish_reason": "length",
                         "message": {
-                            "content": "{}",
+                            "content": content,
                         },
                     }
                 ]
@@ -290,3 +296,123 @@ async def test_analyzer_sends_thinking_configuration(
         assert request_body["thinking"] == {
             "type": expected_type,
         }
+
+
+async def test_analysis_preserves_full_evidence_context_and_output_budget() -> None:
+    request = _analysis_request()
+    request["response_language"] = "zh"
+    request["evidence"] = [
+        {
+            "evidence_id": f"history:item:{3782 + number}",
+            "category": "history",
+            "source_url": f"https://github.com/encode/httpx/issues/{3782 + number}",
+            "content": "Untrusted historical context. " * 50,
+        }
+        for number in range(5)
+    ] + [
+        {
+            "evidence_id": f"source:12345678-1234-4234-8234-123456789abc:{number:064x}",
+            "category": "source",
+            "source_url": f"https://github.com/encode/httpx/blob/{'a' * 40}/client.py#L1-L2",
+            "content": "Untrusted source context. " * 60,
+        }
+        for number in range(5)
+    ]
+    expected = {
+        "summary": "已有相关线索，根因尚未确定。",
+        "findings": [
+            {
+                "statement": "历史记录讨论了取消行为。",
+                "evidence_ids": ["history:item:3782"],
+            }
+        ],
+        "hypotheses": [],
+        "unanswered_questions": ["实际触发了哪条取消路径？"],
+    }
+    calls = []
+
+    def handle(outbound: httpx.Request) -> httpx.Response:
+        payload = json.loads(outbound.content)
+        calls.append(payload)
+        assert payload["thinking"] == {"type": "disabled"}
+        assert payload["max_tokens"] == 4096
+        assert (
+            json.loads(payload["messages"][1]["content"])["evidence"]
+            == request["evidence"]
+        )
+        assert (
+            "Fit the complete JSON within the output budget"
+            in payload["messages"][0]["content"]
+        )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(expected, ensure_ascii=False)
+                        },
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        analyzer = create_llm_analyzer(
+            client,
+            base_url="https://llm.example/v1",
+            api_key="test-key",
+            model_name="test-model",
+            thinking_enabled=False,
+        )
+        result = await analyzer(request)
+    assert result.model_dump() == expected and len(calls) == 1
+
+
+@pytest.mark.parametrize("max_output_tokens", [1024, 8192])
+async def test_analyzer_forwards_caller_selected_output_budget(max_output_tokens):
+    sent = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["max_tokens"])
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(_valid_analysis())},
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        analyzer = create_llm_analyzer(
+            client,
+            base_url="https://llm.example/v1",
+            api_key="test-key",
+            model_name="test-model",
+            max_output_tokens=max_output_tokens,
+        )
+        result = await analyzer(_analysis_request())
+    assert result.model_dump() == _valid_analysis()
+    assert sent == [max_output_tokens]
+
+
+@pytest.mark.parametrize(
+    "max_output_tokens",
+    [True, False, 0, -1, 4096.0, "4096", None, float("nan"), float("inf")],
+)
+def test_analyzer_rejects_invalid_output_budget_before_client_use(max_output_tokens):
+    with pytest.raises(
+        ValueError, match="max_output_tokens must be a positive integer"
+    ):
+        create_llm_analyzer(
+            object(),
+            base_url="https://llm.example/v1",
+            api_key="test-key",
+            model_name="test-model",
+            max_output_tokens=max_output_tokens,
+        )

@@ -46,6 +46,8 @@ class InvestigationDetailResponse(BaseModel):
     repository: str
     issue_number: int
     source_index_id: UUID | None = None
+    auto_prepare_knowledge: bool = False
+    prepared_source_index_id: UUID | None = None
     knowledge_budget: KnowledgePreparationBudget
     status: InvestigationStatus
     issue: IssueSnapshotResponse | None
