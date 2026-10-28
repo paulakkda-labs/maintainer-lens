@@ -31,6 +31,9 @@ from maintainer_lens.db.models.investigation import (
     InvestigationTask,
 )
 from maintainer_lens.db.models.investigation_result import InvestigationResultRecord
+from maintainer_lens.schemas.investigation_budget import (
+    make_knowledge_preparation_budget,
+)
 
 pytestmark = pytest.mark.anyio
 requires_postgres = pytest.mark.skipif(
@@ -145,7 +148,12 @@ def _record(payload=None, *, task_id="task-001", version=1):
 
 def _task(status="succeeded", *, task_id="task-001"):
     return InvestigationTask(
-        id=task_id, repository="fastapi/fastapi", issue_number=123, status=status
+        id=task_id,
+        repository="fastapi/fastapi",
+        issue_number=123,
+        status=status,
+        source_index_id=UUID(INDEX_ID),
+        knowledge_budget=make_knowledge_preparation_budget().model_dump(),
     )
 
 
@@ -174,20 +182,27 @@ async def test_http_returns_complete_typed_result(monkeypatch, needs_more, empty
     payload = _payload(needs_more=needs_more, empty=empty)
     original = deepcopy(payload)
     session = object()
-    query = AsyncMock(return_value=(_task(), None, _record(payload)))
+    task = _task()
+    task.source_index_id = None if empty else UUID(INDEX_ID)
+    query = AsyncMock(return_value=(task, None, _record(payload)))
     monkeypatch.setattr(routes, "get_investigation_details", query)
 
     response = await _get(_app(session))
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    report = body.pop("report_markdown")
+    assert body == {
         "task_id": "task-001",
         "repository": "fastapi/fastapi",
         "issue_number": 123,
         "status": "succeeded",
         "issue": None,
         "result": original,
+        "source_index_id": payload["source_index_id"],
+        "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
     }
+    assert isinstance(report, str) and "调查报告" in report
     assert payload == original
     query.assert_awaited_once_with(session, "task-001")
     decoded = decode_investigation_result(
@@ -195,6 +210,7 @@ async def test_http_returns_complete_typed_result(monkeypatch, needs_more, empty
         task_id="task-001",
         repository="fastapi/fastapi",
         issue_number=123,
+        source_index_id=None if empty else UUID(INDEX_ID),
     )
     assert decoded.source_index_id == (None if empty else UUID(INDEX_ID))
 
@@ -209,6 +225,7 @@ async def test_http_hides_unfinished_artifacts_without_decoding(monkeypatch, sta
     response = await _get(_app(object()))
     assert response.status_code == 200
     assert response.json()["result"] is None
+    assert response.json()["report_markdown"] is None
     decoder.assert_not_called()
 
 
@@ -222,6 +239,7 @@ async def test_missing_artifact_is_legal_for_legacy_tasks(monkeypatch, status):
     response = await _get(_app(object()))
     assert response.status_code == 200
     assert response.json()["result"] is None
+    assert response.json()["report_markdown"] is None
 
 
 def _corrupt_record(case):
@@ -237,6 +255,8 @@ def _corrupt_record(case):
         payload["repository"] = "other/repository"
     elif case == "issue":
         payload["issue_number"] = 999
+    elif case == "source_identity":
+        payload["source_index_id"] = str(UUID(int=1))
     elif case == "missing":
         del payload["analysis_evidence"]
     elif case == "analysis":
@@ -270,6 +290,7 @@ CORRUPTION_CASES = [
     "task",
     "repository",
     "issue",
+    "source_identity",
     "missing",
     "analysis",
     "internal_state",
@@ -289,7 +310,11 @@ async def test_corrupt_storage_raises_typed_error_and_safe_http_500(monkeypatch,
     record = _corrupt_record(case)
     with pytest.raises(StoredInvestigationResultError):
         decode_investigation_result(
-            record, task_id="task-001", repository="fastapi/fastapi", issue_number=123
+            record,
+            task_id="task-001",
+            repository="fastapi/fastapi",
+            issue_number=123,
+            source_index_id=UUID(INDEX_ID),
         )
     monkeypatch.setattr(
         routes,
@@ -391,7 +416,14 @@ async def _seed(factory, task_id, *, status="succeeded", payload=None, version=1
             await session.execute(
                 update(InvestigationTask)
                 .where(InvestigationTask.id == task_id)
-                .values(status=status)
+                .values(
+                    status=status,
+                    source_index_id=(
+                        UUID(payload["source_index_id"])
+                        if payload and payload.get("source_index_id")
+                        else None
+                    ),
+                )
             )
             session.add(
                 InvestigationIssueSnapshot(
@@ -446,6 +478,9 @@ async def test_postgres_task_without_artifacts_is_readable(investigation_task):
         "status": "pending",
         "issue": None,
         "result": None,
+        "source_index_id": None,
+        "report_markdown": None,
+        "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
     }
 
 
@@ -462,6 +497,7 @@ async def test_postgres_missing_result_preserves_task_and_snapshot(
     assert response.json()["status"] == status
     assert response.json()["issue"]["title"] == "Snapshot title"
     assert response.json()["result"] is None
+    assert response.json()["report_markdown"] is None
     assert (await _get(app, "nonexistent-readback-task")).status_code == 404
 
 
@@ -493,6 +529,7 @@ async def test_postgres_corrupt_artifact_hidden_until_success(
     else:
         assert response.status_code == 200
         assert response.json()["result"] is None
+        assert response.json()["report_markdown"] is None
 
 
 @requires_postgres

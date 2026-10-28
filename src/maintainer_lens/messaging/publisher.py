@@ -1,5 +1,7 @@
 """RabbitMQ message construction for investigation tasks."""
 
+from uuid import UUID
+
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustExchange
 
@@ -16,12 +18,14 @@ def create_investigation_message(
     task_id: str,
     repository: str,
     issue_number: int,
+    source_index_id: UUID | None = None,
 ) -> aio_pika.Message:
     """Create a persistent JSON message for an investigation task."""
     payload = InvestigationRequestedMessage(
         task_id=task_id,
         repository=repository,
         issue_number=issue_number,
+        source_index_id=source_index_id,
     )
     message_body = payload.model_dump_json().encode("utf-8")
     message = aio_pika.Message(
@@ -39,12 +43,14 @@ async def publish_investigation(
     task_id: str,
     repository: str,
     issue_number: int,
+    source_index_id: UUID | None = None,
 ) -> None:
     """Publish an investigation request to RabbitMQ."""
     message = create_investigation_message(
         task_id=task_id,
         repository=repository,
         issue_number=issue_number,
+        source_index_id=source_index_id,
     )
 
     await exchange.publish(

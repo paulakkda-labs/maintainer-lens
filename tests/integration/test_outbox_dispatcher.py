@@ -75,6 +75,7 @@ async def test_outbox_dispatch_success(
             task_id=message.task_id,
             repository="encode/httpx",
             issue_number=3712,
+            source_index_id=None,
         )
 
         async with session_factory() as session:

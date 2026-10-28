@@ -13,6 +13,11 @@ Repository source and GitHub discussion history have different identity and upda
 - Source retrieval uses PostgreSQL `pgvector` exact cosine semantic search and optional escaped `ILIKE` literal-identifier matching, fused via reciprocal rank fusion (RRF) when the query merits both.
 - History RAG ingests typed Issues/PRs/comments with source URLs and bounded synchronization. **Semantic search is the default**; keyword retrieval is available for exact identifiers.
 - V1 **does not use HNSW, a reranker, BM25, or a separate search engine** until more representative evaluation identifies a specific need.
+- Investigation Source selection uses an explicit existing ready index UUID,
+  checked against repository and embedding provider/model/dimensions. Return its
+  stored revision/chunker metadata without choosing latest/remote HEAD, building
+  knowledge or treating the metadata snapshot as a lease. API/Task/Outbox/message/
+  Worker now preserve that UUID; validation is repeated at execution boundaries.
 
 ## Evidence and limitations
 

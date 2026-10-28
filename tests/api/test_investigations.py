@@ -14,6 +14,9 @@ from maintainer_lens.api.dependencies import (
     get_session_factory,
 )
 from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
+from maintainer_lens.schemas.investigation_budget import (
+    make_knowledge_preparation_budget,
+)
 
 
 def create_test_app() -> FastAPI:
@@ -70,6 +73,8 @@ async def test_create_investigation_returns_202(
         factory,
         repository="encode/httpx",
         issue_number=3712,
+        source_index_id=None,
+        knowledge_budget_profile="standard",
     )
 
 
@@ -92,6 +97,8 @@ async def test_get_pending_investigation_without_snapshot(
         repository="encode/httpx",
         issue_number=3712,
         status="pending",
+        source_index_id=None,
+        knowledge_budget=make_knowledge_preparation_budget().model_dump(),
     )
 
     query = AsyncMock(return_value=(task, None, None))
@@ -116,6 +123,9 @@ async def test_get_pending_investigation_without_snapshot(
         "status": "pending",
         "issue": None,
         "result": None,
+        "source_index_id": None,
+        "report_markdown": None,
+        "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
     }
 
     query.assert_awaited_once_with(session, "task-001")
@@ -140,6 +150,8 @@ async def test_get_completed_investigation_with_snapshot(
         repository="encode/httpx",
         issue_number=3712,
         status="succeeded",
+        source_index_id=None,
+        knowledge_budget=make_knowledge_preparation_budget().model_dump(),
     )
 
     snapshot = SimpleNamespace(

@@ -15,13 +15,15 @@ from maintainer_lens.agents.investigation_analysis import (
     InvestigationAnalysis,
     ResponseLanguage,
 )
+from maintainer_lens.schemas.investigation_budget import KnowledgeBudgetProfile
 
 
-class CreateInvestigationRequest(BaseModel):
-    """Request to investigate a public GitHub issue."""
+class InvestigationIdentity(BaseModel):
+    """Shared repository/Issue/explicit-index identity without execution options."""
 
     repository: str
     issue_number: int = Field(gt=0)
+    source_index_id: UUID | None = Field(default=None, strict=False)
 
     @field_validator("repository")
     @classmethod
@@ -39,7 +41,13 @@ class CreateInvestigationRequest(BaseModel):
         return value
 
 
-class InvestigationInput(CreateInvestigationRequest):
+class CreateInvestigationRequest(InvestigationIdentity):
+    """HTTP submission options; the backend snapshots the selected profile."""
+
+    knowledge_budget_profile: KnowledgeBudgetProfile = "standard"
+
+
+class InvestigationInput(InvestigationIdentity):
     """Caller-owned issue identity and context, without graph control fields."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
@@ -47,7 +55,6 @@ class InvestigationInput(CreateInvestigationRequest):
     issue_title: str
     issue_body: str | None
     response_language: ResponseLanguage
-    source_index_id: UUID | None = Field(default=None, strict=False)
 
     @field_validator("issue_title")
     @classmethod

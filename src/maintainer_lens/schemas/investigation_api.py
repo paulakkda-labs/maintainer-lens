@@ -2,9 +2,11 @@
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, HttpUrl
 
+from maintainer_lens.schemas.investigation_budget import KnowledgePreparationBudget
 from maintainer_lens.schemas.investigation_contracts import (
     CreateInvestigationRequest as CreateInvestigationRequest,
 )
@@ -43,6 +45,9 @@ class InvestigationDetailResponse(BaseModel):
     task_id: str
     repository: str
     issue_number: int
+    source_index_id: UUID | None = None
+    knowledge_budget: KnowledgePreparationBudget
     status: InvestigationStatus
     issue: IssueSnapshotResponse | None
     result: InvestigationResult | None = None
+    report_markdown: str | None = None

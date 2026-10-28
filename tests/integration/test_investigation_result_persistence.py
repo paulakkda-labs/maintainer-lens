@@ -139,6 +139,11 @@ async def leased_task(investigation_task):
     factory, task_id, engine = investigation_task
     async with factory() as session:
         async with session.begin():
+            await session.execute(
+                update(InvestigationTask)
+                .where(InvestigationTask.id == task_id)
+                .values(source_index_id=INDEX_ID)
+            )
             token = await claim_investigation_task(session, task_id)
     assert token is not None
     return factory, task_id, token, engine
@@ -430,7 +435,13 @@ async def test_missing_task_returns_false_without_inserting(leased_task) -> None
 
 @requires_postgres
 @pytest.mark.parametrize(
-    "change", [{"repository": "another/repo"}, {"issue_number": 999}]
+    "change",
+    [
+        {"repository": "another/repo"},
+        {"issue_number": 999},
+        {"source_index_id": None},
+        {"source_index_id": UUID(int=1)},
+    ],
 )
 async def test_result_identity_must_match_locked_task(leased_task, change) -> None:
     factory, task_id, token, _ = leased_task

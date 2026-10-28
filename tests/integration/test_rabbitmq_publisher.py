@@ -79,6 +79,7 @@ async def test_publish_investigation_routes_message_to_queue() -> None:
                 "task_id": task_id,
                 "repository": repository,
                 "issue_number": issue_number,
+                "source_index_id": None,
             }
 
 

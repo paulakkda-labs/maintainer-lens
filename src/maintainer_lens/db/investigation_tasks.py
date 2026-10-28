@@ -1,5 +1,5 @@
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,14 +65,18 @@ async def get_claimed_investigation_identity(
     *,
     task_id: str,
     claim_token: str,
-) -> tuple[str, int] | None:
+) -> tuple[str, int, UUID | None] | None:
     """Read identity for an active claim without holding a row lock.
 
     This preflight does not authorize later writes; each writer must fence
     again. The caller owns the short read transaction.
     """
     result = await session.execute(
-        select(InvestigationTask.repository, InvestigationTask.issue_number).where(
+        select(
+            InvestigationTask.repository,
+            InvestigationTask.issue_number,
+            InvestigationTask.source_index_id,
+        ).where(
             InvestigationTask.id == task_id,
             InvestigationTask.status == "running",
             InvestigationTask.claim_token == claim_token,
@@ -82,7 +86,7 @@ async def get_claimed_investigation_identity(
     row = result.one_or_none()
     if row is None:
         return None
-    return row.repository, row.issue_number
+    return row.repository, row.issue_number, row.source_index_id
 
 
 async def mark_investigation_succeeded(

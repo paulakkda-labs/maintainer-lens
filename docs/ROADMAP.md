@@ -1,6 +1,6 @@
 # MaintainerLens Roadmap
 
-> Updated 2026-10-28. Completed entries describe implemented capabilities; the remaining M4 work is default Worker integration, final report generation and explicit end-to-end verification. Milestone completion does not imply deployment.
+> Updated 2026-10-28. Earlier History-only smoke, Source metadata and task-schema tests passed per maintainer feedback. Source propagation, bounded production tools and derived reports are implemented with new tests awaiting execution. Bounded Source+History live smoke passed per maintainer feedback; preparation schema and selectable budget snapshots are staged, with contracts/API readback implemented. Broader quality acceptance and CI/review remain; implementation does not imply deployment.
 
 ## Product vision
 
@@ -14,7 +14,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 | M1 | PostgreSQL, Redis, RabbitMQ, reliable Worker, CI | Completed/merged (historical) |
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
 | M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
-| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | **In progress** — Graph application, durable results and HTTP readback merged (#11); default Worker integration and final report generation pending |
+| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | **In progress** — Graph application/results/readback merged (#11); History-only Worker smoke passed per maintainer feedback; Source/tool/report integration implemented, new acceptance suites and quality closure pending |
 | M5 | Workflow checkpoints, state recovery, durable memory, HITL | Planned |
 | M6 | V1 release readiness, evaluation, security, Web UI | Planned |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
@@ -64,7 +64,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 - [x] Local host-mode real GitHub E2E (`encode/httpx#3712`) and Docker end-to-end (`pydantic/pydantic#13781`) success paths.
 - [x] Historical PR #7 merged using squash strategy.
 
-**Boundary:** M2 Worker **fetches and saves a snapshot**. It does not automatically run the M4 Graph just because the Agent modules exist in the same package.
+**Historical boundary:** M2 delivered snapshot-only processing. The current M4 Worker explicitly invokes the Graph processor with prepared History, optional explicit Source and bounded follow-up; legacy succeeded tasks are not backfilled.
 
 ## M3 — Repository knowledge and retrieval — Complete per milestone tests
 
@@ -116,27 +116,79 @@ example used mocked retrieval evidence. Compiled-Graph and processor tests
 also use controlled provider responses. These do not establish a live default
 Worker→Graph→real retrieval/provider E2E.
 
-### Remaining integration and product work
+### Initial Worker wiring (maintainer-confirmed before the expanded profile)
 
-- [ ] Select the first Worker runtime profile: explicit language, Graph deadline,
-  round budget, provider settings and prepared knowledge policy.
-- [ ] Assemble existing retrieval/analyzer dependencies with process-owned cleanup
-  and switch the default Worker callback to `process_graph_investigation()`.
-- [ ] Verify startup failures, injected overrides, cancellation, provider errors,
-  commit-before-success and ACK/confirmed-forwarding behavior through that wiring.
-- [ ] Define explicit ready Source index selection/preparation and compatibility
-  checks before enabling Source in the production path.
-- [ ] Verify HTTP→Outbox→RabbitMQ→Worker→Graph→durable result→HTTP using isolated
-  real infrastructure and fake providers, then separately authorized live checks.
-- [ ] Implement final report generation; `draft_preliminary_report` is currently
-  a terminal routing marker and the stored artifact is a preliminary investigation.
-- [ ] Evaluate multi-source conclusions and citation support on representative
-  Issues; valid IDs/URLs alone do not prove semantic factual support.
+- [x] Bind existing configured History retrieval/analyzer: Chinese, one round,
+  Top-5, 120-second Graph deadline and prepared `openai-compatible` History.
+- [x] Manage separate HTTP clients with AsyncExitStack, validate required provider
+  settings before broker consumption and preserve injected investigator overrides.
+- [x] Switch the default callback to the existing processor and forward existing
+  LLM/embedding settings through Compose; no new settings or migrations.
+- [x] Maintainer-confirmed wiring/startup and related regression tests passed.
+- [x] Supply an explicitly gated live smoke with one historical document,
+  real providers/DB/broker, request caps, pre-ACK durability checks and GET readback.
+- [x] Maintainer-confirmed live History-only smoke passed with normal model
+  completion and GitHub/embedding/LLM requests within the 4/2/1 caps.
+
+### Source metadata boundary and task schema preparation
+
+- [x] Select an existing index by explicit UUID; validate repository, ready status
+  and embedding provider/model/dimensions, without latest/HEAD selection or builds.
+- [x] Return immutable selected revision/chunker metadata under caller-owned
+  transaction scopes; retain building/failed status in a typed existing error family.
+- [x] Reuse the boundary in the Source adapter, including dimensions before query
+  embeddings; provide complete isolated and opt-in PostgreSQL regression tests.
+- [x] Maintainer-confirmed Source metadata/adapter tests passed.
+- [x] Prepare nullable task `source_index_id` UUID model, additive Alembic revision
+  and offline/opt-in PostgreSQL schema tests. No new table or index-retention FK.
+- [x] Maintainer reported all task-schema tests passed; the assistant did not query the DB revision.
+
+### Expanded Source/tools/report integration implemented, acceptance pending
+
+- [x] Carry explicit UUID through API, atomic Task/Outbox, publisher, message and
+  Worker; compare repository/Issue/index at claimed preflight, fenced write and decode.
+- [x] Validate requested Source metadata before external work; building uses
+  existing bounded retries, failed/missing/foreign/incompatible selections fail.
+- [x] Bind Tool Runner with up to three rounds, 120-second Graph and 60-second
+  tool deadlines; expose Source only for explicit index requests. Stop duplicates
+  and non-novel searches without unnecessary analysis. Reject swallowed tool expiry.
+- [x] Derive bilingual Markdown reports from validated saved analysis/context,
+  preserving insufficiency, citations and literal untrusted text, without new LLM calls.
+- [x] Supply default offline regressions and opt-in real PostgreSQL/MQ full-chain
+  tests, plus bounded paid Source+History smoke with self-prepared fixture knowledge.
+- [ ] Maintainer executes expanded regressions and real-infrastructure/full-chain tests.
+- [x] Maintainer-confirmed bounded Source+History paid smoke passed, including
+  real preparation fixtures, POST/Outbox/default Worker and GET report checks.
+- [ ] Review actual conclusions/citations on representative Issues; IDs/URLs alone
+  do not prove truth.
+- [x] Stage automatic-preparation mode and backend-selected Source UUID in the
+  Task model/migration with database mode constraints; upgrade/tests pending.
+- [x] Add small/standard/large/unlimited preparation choices, strict versioned
+  snapshots, profile discovery and submit/readback contracts; keep Graph budgets separate.
+- [ ] Implement automatic preparation using the stored budget snapshot: default
+  Source 500 files / 8 MiB / 2,000 chunks / 900 seconds and three History parents;
+  support unlimited task-preparation limits without disabling transport/content/
+  Graph controls. Reuse exact compatible ready indexes; keep live tests small.
+- [ ] Implement the product intake layer: Issue URL parsing and bounded backend-managed
+  knowledge preparation/selection, without requiring user-supplied index UUIDs.
+- [ ] Complete final quality review, documentation reconciliation, CI and reviewed PR.
 
 Do not introduce a second task runner or status machine. Preserve existing
 claims/leases, fenced required writes, bounded retries and ACK ownership.
 M4 remains open until its production integration and acceptance criteria are met.
 Checkpointer, cross-run memory, HITL and broad multi-agent orchestration remain M5.
+
+### PR and M5 entry criteria
+
+A staged M4 PR can land the implemented Worker/Source/tools/reports and budget
+contracts after the revised migration, relevant regressions and CI/review pass.
+Merging that slice does not complete M4. Closing M4 additionally requires URL-only
+submission, backend automatic preparation using persisted limits, fenced selected
+identity/retry behavior, end-to-end acceptance from unprepared knowledge and a
+focused report/citation quality review. Finish documentation and reviewed green-CI
+PR(s), then squash merge and synchronize main before starting M5 work. The Web UI
+remains M6 and is not an M4 gate. No calendar estimate or unobserved CI status is
+implied by this checklist.
 
 ## M5 — Durable workflow and human review — Planned
 
@@ -180,8 +232,8 @@ counts, not a diff or a verified issue-to-fix relationship.
 Public repository metadata checks now precede issue/history/comment/PR content
 requests. Provenance checks and self-issue exclusion do not establish that every
 model statement is entailed by its citations. Complete result evidence and actual analysis excerpts are now persisted, with
-a whole-Graph deadline. Final report generation, monetary budgets, semantic
-fact verification and duplicate-computation mitigation remain future work.
+a whole-Graph deadline and deterministic Markdown rendering. Automatic knowledge
+preparation/intake, monetary budgets, semantic fact verification and duplicate-computation mitigation remain future work.
 No HNSW, reranker or replacement task status machine is planned without need.
 
 The source benchmark lives in `tests/fixtures/retrieval/sampleproject.json`;

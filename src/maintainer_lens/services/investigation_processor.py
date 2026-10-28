@@ -1,5 +1,6 @@
 """Compose snapshot acquisition, Graph execution and durable result storage."""
 
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 import httpx
@@ -19,7 +20,7 @@ from maintainer_lens.investigation_runner import (
     PermanentInvestigationError,
 )
 from maintainer_lens.schemas.investigation_contracts import (
-    CreateInvestigationRequest,
+    InvestigationIdentity,
     InvestigationInput,
 )
 from maintainer_lens.services.investigation_execution import execute_graph_investigation
@@ -40,6 +41,7 @@ async def process_graph_investigation(
     timeout_seconds: float,
     source_index_id: UUID | None = None,
     source_searcher: SourceSearcher | None = None,
+    source_index_validator: Callable[[str, UUID], Awaitable[None]] | None = None,
     max_search_rounds: int = 1,
     query_planner: FollowUpQueryPlanner | None = None,
     tool_search_runner: ToolSearchRunner | None = None,
@@ -50,8 +52,13 @@ async def process_graph_investigation(
     Graph options are validated by the application entry after snapshot commit;
     its deadline does not cover snapshot acquisition or database commits.
     """
-    requested_identity = CreateInvestigationRequest.model_validate(
-        {"repository": repository, "issue_number": issue_number}, strict=True
+    requested_identity = InvestigationIdentity.model_validate(
+        {
+            "repository": repository,
+            "issue_number": issue_number,
+            "source_index_id": source_index_id,
+        },
+        strict=True,
     )
 
     async with session_factory() as session:
@@ -66,12 +73,20 @@ async def process_graph_investigation(
             if identity != (
                 requested_identity.repository,
                 requested_identity.issue_number,
+                requested_identity.source_index_id,
             ):
                 raise PermanentInvestigationError(
                     "Investigation request does not match its task identity"
                 )
 
-    task_repository, task_issue_number = identity
+    task_repository, task_issue_number, task_source_index_id = identity
+    if task_source_index_id is not None:
+        if source_searcher is None:
+            raise ValueError("Requested Source index requires a source_searcher")
+        if source_index_validator is not None:
+            await source_index_validator(task_repository, task_source_index_id)
+    elif source_searcher is not None:
+        raise ValueError("Source search requires a task source_index_id")
     snapshot = await investigate_issue(
         http_client=http_client,
         session_factory=session_factory,
@@ -86,7 +101,7 @@ async def process_graph_investigation(
         issue_title=snapshot.title,
         issue_body=snapshot.body,
         response_language=response_language,
-        source_index_id=source_index_id,
+        source_index_id=task_source_index_id,
     )
     result = await execute_graph_investigation(
         request,

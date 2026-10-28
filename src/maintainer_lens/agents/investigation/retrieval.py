@@ -18,7 +18,9 @@ from maintainer_lens.agents.investigation.state import (
     SourceSearcher,
 )
 from maintainer_lens.clients.embedding import EmbeddingProvider
-from maintainer_lens.db.models.repository_index import RepositoryIndex
+from maintainer_lens.services.investigation_source_index import (
+    get_investigation_source_index,
+)
 from maintainer_lens.services.repository_history_semantic_search import (
     search_repository_history_semantic,
 )
@@ -61,11 +63,12 @@ def create_source_searcher(
     *,
     embedding_provider_name: str,
     embedding_model: str,
+    embedding_dimensions: int,
     candidate_limit: int = 10,
     top_k: int = 5,
     rank_constant: int = 60,
 ) -> SourceSearcher:
-    """Bind source retrieval and validate the requested index."""
+    """Bind source retrieval with an explicit index and embedding identity."""
 
     async def search(
         repository: str,
@@ -75,18 +78,14 @@ def create_source_searcher(
         async with session_factory() as session:
             # End the ownership lookup before the retriever opens its transactions.
             async with session.begin():
-                repository_index = await session.get(
-                    RepositoryIndex,
-                    index_id,
+                await get_investigation_source_index(
+                    session,
+                    repository=repository,
+                    source_index_id=index_id,
+                    embedding_provider_name=embedding_provider_name,
+                    embedding_model=embedding_model,
+                    embedding_dimensions=embedding_dimensions,
                 )
-
-                if repository_index is None:
-                    raise ValueError("Source index does not exist")
-
-                if repository_index.repository != repository:
-                    raise ValueError(
-                        "Source index does not belong to the requested repository"
-                    )
 
             return await search_repository(
                 session,

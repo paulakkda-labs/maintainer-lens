@@ -161,7 +161,7 @@ def offline(monkeypatch):
         assert db.transactions == 1
         assert task_id == "task-001"
         assert claim_token == "token-001"
-        return REPOSITORY, 123
+        return REPOSITORY, 123, None
 
     async def snapshot(session, **kwargs):
         assert db.transactions == 1
@@ -415,6 +415,8 @@ async def test_github_rate_limit_preserves_deadline_and_stops_before_graph(offli
 async def test_optional_source_and_follow_up_dependencies_reach_real_graph(
     offline, strategy
 ):
+    offline.identity.side_effect = None
+    offline.identity.return_value = (REPOSITORY, 123, INDEX_ID)
     source = AsyncMock(return_value=[_source_hit()])
     if strategy == "planner":
         follow_up = AsyncMock(
@@ -568,7 +570,7 @@ async def test_claim_identity_reader_uses_database_state_and_time(
         async with session.begin():
             assert await get_claimed_investigation_identity(
                 session, task_id=task_id, claim_token=token
-            ) == (REPOSITORY, 123)
+            ) == (REPOSITORY, 123, None)
     changes = {}
     if case == "pending":
         changes["status"] = "pending"

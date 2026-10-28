@@ -39,7 +39,7 @@ class InvestigationDeadlineExceeded(TimeoutError):
     """The deadline owned by the complete graph execution expired."""
 
 
-def _validate_evidence(result: InvestigationResult) -> None:
+def validate_investigation_evidence(result: InvestigationResult) -> None:
     """Resolve actual analysis citations against all returned evidence."""
 
     references: dict[str, tuple[str, str]] = {}
@@ -130,7 +130,7 @@ def _validate_result(
         if type(state["no_new_evidence"]) is not bool:
             raise ValueError("Invalid graph novelty flag")
 
-        _validate_evidence(result)
+        validate_investigation_evidence(result)
         route, _ = assess_next_step(state)
         if (result.next_step == "draft_preliminary_report") != (route == "ready"):
             raise ValueError("Terminal marker disagrees with assess_next_step")
