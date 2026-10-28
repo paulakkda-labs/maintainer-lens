@@ -60,6 +60,31 @@ async def claim_investigation_task(
     return claim_token
 
 
+async def get_claimed_investigation_identity(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    claim_token: str,
+) -> tuple[str, int] | None:
+    """Read identity for an active claim without holding a row lock.
+
+    This preflight does not authorize later writes; each writer must fence
+    again. The caller owns the short read transaction.
+    """
+    result = await session.execute(
+        select(InvestigationTask.repository, InvestigationTask.issue_number).where(
+            InvestigationTask.id == task_id,
+            InvestigationTask.status == "running",
+            InvestigationTask.claim_token == claim_token,
+            InvestigationTask.lease_expires_at > func.clock_timestamp(),
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        return None
+    return row.repository, row.issue_number
+
+
 async def mark_investigation_succeeded(
     session: AsyncSession,
     task_id: str,

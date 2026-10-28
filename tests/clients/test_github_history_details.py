@@ -52,6 +52,8 @@ async def test_fetch_issue_comments_page() -> None:
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         requests.append(request)
 
         return httpx.Response(
@@ -101,7 +103,13 @@ async def test_fetch_issue_comments_page() -> None:
 
 async def test_empty_comments_page_has_no_continuation() -> None:
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(200, json=[])
+            )
+        )
     ) as client:
         result = await fetch_issue_comments_page(
             client,
@@ -117,6 +125,8 @@ async def test_fetch_merged_pull_request_details() -> None:
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         requests.append(request)
         return httpx.Response(200, json=_pull_request(20))
 
@@ -143,9 +153,13 @@ async def test_fetch_merged_pull_request_details() -> None:
 async def test_unmerged_pr_may_have_merge_commit_sha() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                200,
-                json=_pull_request(21, merged=False),
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(
+                    200,
+                    json=_pull_request(21, merged=False),
+                )
             )
         )
     ) as client:
@@ -176,6 +190,8 @@ async def test_invalid_identity_rejected_before_network(
     number: int,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         raise AssertionError("Network request should not be made")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -209,6 +225,8 @@ async def test_invalid_comment_pagination_rejected(
     per_page: int,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         raise AssertionError("Network request should not be made")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -224,7 +242,13 @@ async def test_invalid_comment_pagination_rejected(
 
 async def test_comment_http_error_propagates() -> None:
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(503))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(503)
+            )
+        )
     ) as client:
         with pytest.raises(httpx.HTTPStatusError) as error:
             await fetch_issue_comments_page(
@@ -238,7 +262,13 @@ async def test_comment_http_error_propagates() -> None:
 
 async def test_pull_request_http_error_propagates() -> None:
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(404))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(404)
+            )
+        )
     ) as client:
         with pytest.raises(httpx.HTTPStatusError) as error:
             await fetch_pull_request_details(
@@ -260,7 +290,13 @@ async def test_pull_request_http_error_propagates() -> None:
 )
 async def test_invalid_comment_response_rejected(payload) -> None:
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(200, json=payload)
+            )
+        )
     ) as client:
         with pytest.raises((ValueError, ValidationError)):
             await fetch_issue_comments_page(
@@ -273,9 +309,13 @@ async def test_invalid_comment_response_rejected(payload) -> None:
 async def test_wrong_pull_request_number_rejected() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                200,
-                json=_pull_request(99),
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(
+                    200,
+                    json=_pull_request(99),
+                )
             )
         )
     ) as client:
@@ -292,7 +332,13 @@ async def test_invalid_pull_request_schema_rejected() -> None:
     payload["head"] = {"sha": "invalid"}
 
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(200, json=payload)
+            )
+        )
     ) as client:
         with pytest.raises(ValidationError):
             await fetch_pull_request_details(

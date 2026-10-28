@@ -39,6 +39,8 @@ async def test_fetches_mixed_issue_and_pr_with_next_page() -> None:
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         seen.append(request)
 
         return httpx.Response(
@@ -81,7 +83,11 @@ async def test_fetches_mixed_issue_and_pr_with_next_page() -> None:
 async def test_no_next_link_means_last_page() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda request: httpx.Response(200, json=[_issue(1)])
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(200, json=[_issue(1)])
+            )
         )
     ) as client:
         result = await fetch_repository_history_page(client, "org/repo", page=3)
@@ -95,6 +101,8 @@ async def test_since_is_normalized_to_utc() -> None:
     captured = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         captured.append(request.url.params["since"])
         return httpx.Response(200, json=[])
 
@@ -138,6 +146,8 @@ async def test_rejects_invalid_input_without_request(
     repo, page, per_page, since
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         raise AssertionError("Network request should not be made")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -155,7 +165,11 @@ async def test_rejects_invalid_input_without_request(
 async def test_http_errors_propagate() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda request: httpx.Response(403, json={"message": "rate limit"})
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(403, json={"message": "rate limit"})
+            )
         )
     ) as client:
         with pytest.raises(httpx.HTTPStatusError) as error:
@@ -175,7 +189,13 @@ async def test_http_errors_propagate() -> None:
 )
 async def test_rejects_malformed_response(payload) -> None:
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+        transport=httpx.MockTransport(
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(200, json=payload)
+            )
+        )
     ) as client:
         with pytest.raises((ValueError, ValidationError)):
             await fetch_repository_history_page(client, "org/repo")

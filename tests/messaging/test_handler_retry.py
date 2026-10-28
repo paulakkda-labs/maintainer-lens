@@ -185,44 +185,23 @@ async def test_invalid_retry_header_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
     invalid_attempts: object,
 ) -> None:
-    """Reject malformed retry metadata before publishing."""
-    incoming_message.headers = {
-        RETRY_ATTEMPTS_HEADER: invalid_attempts,
-    }
-
-    error = handler_module.RetryableMessageError(
-        task_id="task-001",
-        status="running",
-    )
-
-    handle = AsyncMock(side_effect=error)
+    """Dead-letter invalid retry metadata without starting processing."""
+    handle = AsyncMock()
     republish = AsyncMock()
-
-    monkeypatch.setattr(
-        handler_module,
-        "handle_investigation_message",
-        handle,
+    monkeypatch.setattr(handler_module, "handle_investigation_message", handle)
+    monkeypatch.setattr(handler_module, "republish_investigation_message", republish)
+    incoming_message.headers = {RETRY_ATTEMPTS_HEADER: invalid_attempts}
+    exchange = Mock()
+    await handler_module.handle_investigation_message_with_retry(
+        message=incoming_message, exchange=exchange, processor=AsyncMock()
     )
-    monkeypatch.setattr(
-        handler_module,
-        "republish_investigation_message",
-        republish,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="Invalid retry attempts header",
-    ) as exc_info:
-        await handler_module.handle_investigation_message_with_retry(
-            message=incoming_message,
-            exchange=Mock(),
-            processor=AsyncMock(),
-        )
-
-    assert exc_info.value.__cause__ is None
     handle.assert_not_awaited()
-
-    republish.assert_not_awaited()
+    republish.assert_awaited_once_with(
+        exchange=exchange,
+        incoming_message=incoming_message,
+        routing_key=DEAD_ROUTING_KEY,
+        retry_attempts=0,
+    )
     incoming_message.ack.assert_not_awaited()
 
 
@@ -366,44 +345,26 @@ async def test_invalid_missing_task_checks_header_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
     invalid_checks: object,
 ) -> None:
-    """Reject malformed missing-task metadata before republishing."""
+    """Dead-letter malformed missing-task metadata before execution."""
     incoming_message.headers = {
         RETRY_ATTEMPTS_HEADER: 0,
         MISSING_TASK_CHECKS_HEADER: invalid_checks,
     }
-
-    error = handler_module.RetryableMessageError(
-        task_id="task-001",
-        status=None,
-    )
-
-    handle = AsyncMock(side_effect=error)
+    handle = AsyncMock()
     republish = AsyncMock()
-
-    monkeypatch.setattr(
-        handler_module,
-        "handle_investigation_message",
-        handle,
+    monkeypatch.setattr(handler_module, "handle_investigation_message", handle)
+    monkeypatch.setattr(handler_module, "republish_investigation_message", republish)
+    exchange = Mock()
+    await handler_module.handle_investigation_message_with_retry(
+        message=incoming_message, exchange=exchange, processor=AsyncMock()
     )
-    monkeypatch.setattr(
-        handler_module,
-        "republish_investigation_message",
-        republish,
+    handle.assert_not_awaited()
+    republish.assert_awaited_once_with(
+        exchange=exchange,
+        incoming_message=incoming_message,
+        routing_key=DEAD_ROUTING_KEY,
+        retry_attempts=0,
     )
-
-    with pytest.raises(
-        ValueError,
-        match="Invalid missing task checks header",
-    ) as exc_info:
-        await handler_module.handle_investigation_message_with_retry(
-            message=incoming_message,
-            exchange=Mock(),
-            processor=AsyncMock(),
-        )
-
-    assert exc_info.value.__cause__ is error
-
-    republish.assert_not_awaited()
     incoming_message.ack.assert_not_awaited()
 
 
@@ -525,24 +486,20 @@ async def test_retryable_failure_rejects_invalid_attempts(
     retryable_failure_mocks: tuple[AsyncMock, AsyncMock, Exception],
     invalid_attempts: object,
 ) -> None:
-    """Reject invalid retry metadata after an investigation failure."""
-    _, republish, _ = retryable_failure_mocks
-
-    incoming_message.headers = {
-        RETRY_ATTEMPTS_HEADER: invalid_attempts,
-    }
-
-    with pytest.raises(
-        ValueError,
-        match="Invalid retry attempts header",
-    ):
-        await handler_module.handle_investigation_message_with_retry(
-            message=incoming_message,
-            exchange=Mock(),
-            processor=AsyncMock(),
-        )
-
-    republish.assert_not_awaited()
+    """Dead-letter invalid metadata before attempting investigation execution."""
+    handle, republish, _ = retryable_failure_mocks
+    incoming_message.headers = {RETRY_ATTEMPTS_HEADER: invalid_attempts}
+    exchange = Mock()
+    await handler_module.handle_investigation_message_with_retry(
+        message=incoming_message, exchange=exchange, processor=AsyncMock()
+    )
+    handle.assert_not_awaited()
+    republish.assert_awaited_once_with(
+        exchange=exchange,
+        incoming_message=incoming_message,
+        routing_key=DEAD_ROUTING_KEY,
+        retry_attempts=0,
+    )
     incoming_message.ack.assert_not_awaited()
 
 

@@ -6,6 +6,7 @@ from maintainer_lens.db.models.investigation import (
     InvestigationOutboxEvent,
     InvestigationTask,
 )
+from maintainer_lens.db.models.investigation_result import InvestigationResultRecord
 from maintainer_lens.db.models.repository_history import RepositoryHistoryRecord
 from maintainer_lens.db.models.repository_history_backfill import (
     RepositoryHistoryBackfillState,
@@ -26,6 +27,7 @@ __all__ = [
     "InvestigationTask",
     "InvestigationIssueSnapshot",
     "InvestigationOutboxEvent",
+    "InvestigationResultRecord",
     "RepositoryIndex",
     "RepositoryChunk",
     "RepositoryIndexBuildLease",

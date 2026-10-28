@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from maintainer_lens.clients.github import (
     GITHUB_API_BASE_URL,
     GITHUB_API_VERSION,
+    fetch_public_repository_metadata,
 )
 
 
@@ -98,6 +99,8 @@ async def fetch_issue_comments_page(
     if type(per_page) is not int or not 1 <= per_page <= 100:
         raise ValueError("per_page must be between 1 and 100")
 
+    await fetch_public_repository_metadata(http_client, repository)
+
     response = await http_client.get(
         (f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/issues/{issue_number}/comments"),
         params={"page": page, "per_page": per_page},
@@ -144,6 +147,8 @@ async def fetch_pull_request_details(
     """Fetch merge status and revision metadata for one pull request."""
 
     owner, repo = _parse_repository_number(repository, pull_number)
+
+    await fetch_public_repository_metadata(http_client, repository)
 
     response = await http_client.get(
         f"{GITHUB_API_BASE_URL}/repos/{owner}/{repo}/pulls/{pull_number}",

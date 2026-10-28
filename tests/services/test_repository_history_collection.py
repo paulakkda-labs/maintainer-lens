@@ -39,6 +39,8 @@ async def test_collects_multiple_pages_and_deduplicates_numbers() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         requests.append(request)
         page = int(request.url.params["page"])
         if page == 1:
@@ -81,6 +83,8 @@ async def test_stops_at_page_limit_without_requesting_another_page() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         requests.append(request)
         return httpx.Response(
             200,
@@ -104,6 +108,8 @@ async def test_stops_in_the_middle_of_a_page_at_item_limit() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         requests.append(request)
         return httpx.Response(
             200,
@@ -126,7 +132,11 @@ async def test_stops_in_the_middle_of_a_page_at_item_limit() -> None:
 async def test_exact_item_limit_on_last_page_is_exhausted() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda request: httpx.Response(200, json=[_issue(5), _issue(4)])
+            lambda request: (
+                httpx.Response(200, json={"private": False})
+                if request.url.path.count("/") == 3
+                else httpx.Response(200, json=[_issue(5), _issue(4)])
+            )
         )
     ) as client:
         batch = await collect_repository_history(client, "org/repo", max_items=2)
@@ -153,6 +163,8 @@ async def test_invalid_limits_make_no_http_requests(
     per_page: int, max_pages: int, max_items: int
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         raise AssertionError("HTTP request must not happen")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -169,6 +181,8 @@ async def test_invalid_limits_make_no_http_requests(
 @pytest.mark.anyio
 async def test_http_failure_propagates_instead_of_returning_partial_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         if request.url.params["page"] == "1":
             return httpx.Response(
                 200,

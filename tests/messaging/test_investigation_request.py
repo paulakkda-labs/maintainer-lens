@@ -7,7 +7,6 @@ import pytest
 import maintainer_lens.messaging.handler as handler_module
 from maintainer_lens.investigation_runner import (
     InvestigationClaimUnavailableError,
-    LeaseLostError,
 )
 from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
 
@@ -173,9 +172,9 @@ async def test_execution_failure_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Propagate execution failures without converting them to retry errors."""
-    lease_error = LeaseLostError("Investigation lease lost")
+    execution_error = RuntimeError("Database unavailable")
 
-    execute = AsyncMock(side_effect=lease_error)
+    execute = AsyncMock(side_effect=execution_error)
     get_status = AsyncMock()
 
     monkeypatch.setattr(
@@ -191,14 +190,14 @@ async def test_execution_failure_propagates(
 
     session_factory = MagicMock()
 
-    with pytest.raises(LeaseLostError) as exc_info:
+    with pytest.raises(RuntimeError) as exc_info:
         await handler_module.process_investigation_request(
             request=investigation_request,
             session_factory=session_factory,
             processor=AsyncMock(),
         )
 
-    assert exc_info.value is lease_error
+    assert exc_info.value is execution_error
     get_status.assert_not_awaited()
     session_factory.assert_not_called()
 

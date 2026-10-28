@@ -130,6 +130,8 @@ async def test_history_pipeline_integrates_existing_services() -> None:
     requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.count("/") == 3:
+            return httpx.Response(200, json={"private": False})
         path = request.url.path
         requests.append(path)
 

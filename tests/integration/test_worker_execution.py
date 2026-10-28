@@ -102,28 +102,25 @@ async def test_unavailable_claim_does_not_start_processor(
 async def test_processor_failure_does_not_mark_success(
     investigation_task: tuple[async_sessionmaker[AsyncSession], str, AsyncEngine],
 ) -> None:
-    """Leave the task unfinished when investigation processing fails."""
+    """Persist invalid processor data as a terminal failure before propagation."""
     session_factory, task_id, _ = investigation_task
 
     async def processor(_claim_token: str) -> None:
         raise ValueError("Simulated investigation failure")
 
-    with pytest.raises(ExceptionGroup) as exc_info:
+    with pytest.raises(runner_module.PermanentInvestigationError):
         await runner_module.execute_investigation_task(
             session_factory=session_factory,
             task_id=task_id,
             processor=processor,
         )
 
-    assert any(isinstance(exc, ValueError) for exc in exc_info.value.exceptions)
-
     async with session_factory() as session:
         task = await session.get(InvestigationTask, task_id)
-
         assert task is not None
-        assert task.status == "running"
-        assert task.claim_token is not None
-        assert task.lease_expires_at is not None
+        assert task.status == "failed"
+        assert task.claim_token is None
+        assert task.lease_expires_at is None
 
 
 async def test_expired_lease_prevents_final_completion(
