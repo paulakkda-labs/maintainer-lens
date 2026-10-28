@@ -12,6 +12,7 @@ from maintainer_lens.agents.investigation_graph import (
     build_investigation_graph,
     create_source_searcher,
 )
+from maintainer_lens.db.models.repository_index import RepositoryIndex
 
 pytestmark = pytest.mark.anyio
 
@@ -193,7 +194,19 @@ class FakeSession:
     """Track repository-index lookup and session cleanup."""
 
     def __init__(self, repository: str) -> None:
-        self.get = AsyncMock(return_value=SimpleNamespace(repository=repository))
+        self.get = AsyncMock(
+            return_value=SimpleNamespace(
+                id=SOURCE_INDEX_ID,
+                repository=repository,
+                commit_sha=COMMIT_SHA,
+                tree_sha="d" * 40,
+                embedding_provider="openai-compatible",
+                embedding_model="test-model",
+                embedding_dimensions=1024,
+                chunker_version="test-chunker",
+                status="ready",
+            )
+        )
         self.entered = False
         self.exited = False
         self.in_transaction = False
@@ -239,6 +252,7 @@ async def test_source_searcher_delegates_to_existing_hybrid_search(
         embedding_client,
         embedding_provider_name="openai-compatible",
         embedding_model="test-model",
+        embedding_dimensions=1024,
         candidate_limit=10,
         top_k=5,
         rank_constant=60,
@@ -253,8 +267,9 @@ async def test_source_searcher_delegates_to_existing_hybrid_search(
     assert len(hits) == 1
 
     session.get.assert_awaited_once_with(
-        workflow_module.RepositoryIndex,
+        RepositoryIndex,
         SOURCE_INDEX_ID,
+        populate_existing=True,
     )
 
     search_repository.assert_awaited_once_with(
@@ -293,6 +308,7 @@ async def test_source_searcher_rejects_foreign_repository(
         embedding_client,
         embedding_provider_name="openai-compatible",
         embedding_model="test-model",
+        embedding_dimensions=1024,
     )
 
     with pytest.raises(

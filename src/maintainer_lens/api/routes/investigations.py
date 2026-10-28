@@ -3,8 +3,10 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from maintainer_lens.agents.investigation.state import InvalidInvestigationResultError
 from maintainer_lens.api.dependencies import (
     get_db_session,
     get_session_factory,
@@ -22,6 +24,11 @@ from maintainer_lens.schemas.investigation_api import (
     InvestigationDetailResponse,
     IssueSnapshotResponse,
 )
+from maintainer_lens.schemas.investigation_budget import (
+    KnowledgePreparationBudget,
+    list_knowledge_budget_profiles,
+)
+from maintainer_lens.services.investigation_report import render_investigation_report
 from maintainer_lens.services.investigation_submission import (
     create_investigation_submission,
 )
@@ -47,12 +54,20 @@ async def create_investigation(
         session_factory,
         repository=payload.repository,
         issue_number=payload.issue_number,
+        source_index_id=payload.source_index_id,
+        knowledge_budget_profile=payload.knowledge_budget_profile,
     )
 
     return CreateInvestigationResponse(
         task_id=message.task_id,
         status="pending",
     )
+
+
+@router.get("/budget-profiles", response_model=list[KnowledgePreparationBudget])
+async def get_knowledge_budget_profiles() -> list[KnowledgePreparationBudget]:
+    """Describe preparation limits without loading settings or opening resources."""
+    return list_knowledge_budget_profiles()
 
 
 @router.get(
@@ -78,7 +93,18 @@ async def get_investigation(
 
     task, snapshot, stored_result = result
 
+    try:
+        knowledge_budget = KnowledgePreparationBudget.model_validate(
+            task.knowledge_budget
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored investigation budget is unavailable",
+        ) from exc
+
     graph_result = None
+    report_markdown = None
     if task.status == "succeeded" and stored_result is not None:
         try:
             graph_result = decode_investigation_result(
@@ -86,8 +112,10 @@ async def get_investigation(
                 task_id=task.id,
                 repository=task.repository,
                 issue_number=task.issue_number,
+                source_index_id=task.source_index_id,
             )
-        except StoredInvestigationResultError as exc:
+            report_markdown = render_investigation_report(graph_result)
+        except (StoredInvestigationResultError, InvalidInvestigationResultError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Stored investigation result is unavailable",
@@ -106,7 +134,10 @@ async def get_investigation(
         task_id=task.id,
         repository=task.repository,
         issue_number=task.issue_number,
+        source_index_id=task.source_index_id,
+        knowledge_budget=knowledge_budget,
         status=task.status,
         issue=issue,
         result=graph_result,
+        report_markdown=report_markdown,
     )

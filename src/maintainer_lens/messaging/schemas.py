@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from aio_pika.abc import AbstractIncomingMessage
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +18,7 @@ class InvestigationRequestedMessage(BaseModel):
     task_id: str = Field(min_length=1)
     repository: str = Field(min_length=1)
     issue_number: int = Field(gt=0, strict=True)
+    source_index_id: UUID | None = None
 
     model_config = ConfigDict(extra="forbid")
 

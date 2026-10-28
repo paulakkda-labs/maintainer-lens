@@ -68,6 +68,24 @@ def _execution_records(caplog) -> list[logging.LogRecord]:
     ]
 
 
+async def test_swallowed_tool_deadline_cancellation_cannot_return_success(caplog):
+    swallowed = asyncio.Event()
+
+    async def runner(state):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            swallowed.set()
+            return _tool_result()
+
+    controlled = with_tool_step_controls(runner, timeout_seconds=0.02)
+    with caplog.at_level(logging.WARNING, logger=LOG_NAME):
+        with pytest.raises(TimeoutError, match="deadline exceeded"):
+            await controlled(_state())
+    assert swallowed.is_set()
+    assert _execution_records(caplog)[0].outcome == "timed_out"
+
+
 async def test_success_returns_original_result_and_logs_metadata(
     caplog,
 ) -> None:

@@ -56,6 +56,7 @@ async def dispatch_one_outbox_event(
                 task_id=message.task_id,
                 repository=message.repository,
                 issue_number=message.issue_number,
+                source_index_id=message.source_index_id,
             )
 
     except Exception:

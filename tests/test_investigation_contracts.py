@@ -15,6 +15,7 @@ from maintainer_lens.schemas.investigation_api import (
 )
 from maintainer_lens.schemas.investigation_contracts import (
     CreateInvestigationRequest,
+    InvestigationIdentity,
     InvestigationInput,
     InvestigationResult,
 )
@@ -105,7 +106,8 @@ def test_legacy_imports_reexport_the_same_model_classes() -> None:
     assert ApiCreateInvestigationRequest is CreateInvestigationRequest
     assert ApplicationInvestigationInput is InvestigationInput
     assert ApplicationInvestigationResult is InvestigationResult
-    assert InvestigationInput.__bases__ == (CreateInvestigationRequest,)
+    assert InvestigationInput.__bases__ == (InvestigationIdentity,)
+    assert issubclass(CreateInvestigationRequest, InvestigationIdentity)
     assert InvestigationResult.__bases__ == (InvestigationInput,)
 
 
@@ -114,7 +116,12 @@ def test_http_request_retains_existing_coercion_and_extra_field_policy() -> None
         {"repository": "encode/httpx", "issue_number": "12", "unused": "ignored"}
     )
 
-    assert request.model_dump() == {"repository": "encode/httpx", "issue_number": 12}
+    assert request.model_dump() == {
+        "repository": "encode/httpx",
+        "issue_number": 12,
+        "source_index_id": None,
+        "knowledge_budget_profile": "standard",
+    }
 
 
 @pytest.mark.parametrize("model", [CreateInvestigationRequest, InvestigationInput])

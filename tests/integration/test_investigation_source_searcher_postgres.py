@@ -125,6 +125,7 @@ def make_searcher(context, embedding):
         embedding,
         embedding_provider_name="regression-provider",
         embedding_model="regression-model",
+        embedding_dimensions=3,
     )
 
 
@@ -167,7 +168,10 @@ async def test_real_graph_source_adapter_preserves_transaction_boundaries(
     assert_sessions_closed(context)
 
 
-@pytest.mark.parametrize("invalid", ["missing", "foreign", "not_ready", "model"])
+@pytest.mark.parametrize(
+    "invalid",
+    ["missing", "foreign", "not_ready", "failed", "provider", "model", "dimensions"],
+)
 async def test_invalid_index_is_rejected_before_embedding(source_context, invalid):
     context = source_context
     repository = context.repository
@@ -177,11 +181,13 @@ async def test_invalid_index_is_rejected_before_embedding(source_context, invali
     elif invalid == "foreign":
         repository = "another/repository"
     else:
-        values = (
-            {"status": "building"}
-            if invalid == "not_ready"
-            else {"embedding_model": "different-model"}
-        )
+        values = {
+            "not_ready": {"status": "building"},
+            "failed": {"status": "failed"},
+            "provider": {"embedding_provider": "different-provider"},
+            "model": {"embedding_model": "different-model"},
+            "dimensions": {"embedding_dimensions": 4},
+        }[invalid]
         async with context.setup_factory.begin() as session:
             await session.execute(
                 update(RepositoryIndex)

@@ -3,6 +3,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -37,6 +38,32 @@ class InvestigationTask(Base):
     issue_number: Mapped[int] = mapped_column(
         nullable=False,
     )
+    # Preserve the requested identity independently of index retention.
+    source_index_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=True,
+    )
+    auto_prepare_knowledge: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    # Backend-selected identity is separate from the caller's requested index.
+    prepared_source_index_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=True,
+    )
+    # Frozen v1 fallback for legacy INSERTs; new submissions resolve profiles once.
+    knowledge_budget: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text(
+            '\'{"schema_version": 1,"profile": "standard","profile_version": 1,'
+            '"source_max_files": 500,"source_max_bytes": 8388608,'
+            '"source_max_chunks": 2000,"history_max_items": 3,'
+            '"preparation_timeout_seconds": 900}\'::jsonb'
+        ),
+    )
     status: Mapped[str] = mapped_column(
         String(20),
         server_default="pending",
@@ -66,6 +93,18 @@ class InvestigationTask(Base):
         CheckConstraint(
             "issue_number > 0",
             name="ck_investigation_tasks_issue_number_positive",
+        ),
+        CheckConstraint(
+            "NOT auto_prepare_knowledge OR source_index_id IS NULL",
+            name="ck_investigation_tasks_auto_source_request",
+        ),
+        CheckConstraint(
+            "auto_prepare_knowledge OR prepared_source_index_id IS NULL",
+            name="ck_investigation_tasks_prepared_source_mode",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(knowledge_budget) = 'object'",
+            name="ck_investigation_tasks_knowledge_budget_object",
         ),
     )
 

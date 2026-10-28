@@ -1,7 +1,7 @@
 # ADR: Modular, bounded, evidence-first LangGraph investigation
 
 - **Status:** Accepted; application execution and durable result boundaries added 2026-10-28.
-- **Scope:** LangGraph investigation, its application boundary and preliminary result contract. Default Worker integration remains separate.
+- **Scope:** LangGraph investigation, its application boundary and preliminary result contract. The default Worker binds prepared History, optional explicit Source and bounded tools.
 
 ## Context
 
@@ -22,9 +22,9 @@ A single large graph file mixing orchestration, provider requests, evidence tran
 ## Consequences
 
 - **Benefits:** Small testable units, explicit trust boundaries, less unnecessary retrieval work and more predictable cost.
-- **Costs:** More adapter interfaces and testing; default Worker assembly still needs to supply a concrete provider/knowledge profile while preserving existing lifecycle and delivery semantics.
+- **Costs:** More adapter interfaces and testing. The expanded Worker binds existing providers, prepared History, optional explicit Source and bounded tools while preserving lifecycle and delivery semantics. New acceptance suites require execution.
 - **Ownership:** The root-level investigation runner remains the only claim/lease/status owner. The application boundary is not a competing task runner and adds no retry loop.
-- **Deferred:** Persistent Checkpointer, HITL, multi-agent roles, monetary budgets and final report generation. A stored preliminary investigation is not a generated final report or a checkpoint.
+- **Deferred:** Persistent Checkpointer, HITL, multi-agent roles, monetary budgets and additional report inference. A deterministic report renders existing validated analysis; it is not a checkpoint.
 
 ## Runtime and verification boundaries
 
@@ -38,8 +38,10 @@ History URL/identity checks and self-issue exclusion strengthen input boundaries
 free-text feedback remains outside verified findings.
 
 `mark_ready_for_report` only sets a next-step marker. Preliminary result storage
-and HTTP readback are implemented; a final report-writing node and default
-Worker-to-Graph wiring are not. Own deadline expiry is distinguished from
+and HTTP readback are implemented. Default Worker wiring now uses prepared
+History and optional explicit Source, up to three rounds, Chinese output, a
+120-second Graph deadline and 60 seconds per tool step. A pure Markdown renderer
+formats the stored analysis on GET; it does not add a report-writing Graph node. Own deadline expiry is distinguished from
 upstream timeout using `timeout_scope.expired()`, including a check after normal
 return when a dependency swallowed timeout cancellation. External cancellation
 and dependency exception groups propagate at the application boundary.
@@ -48,3 +50,6 @@ Regression coverage includes real compiled Graphs with fake providers and
 opt-in PostgreSQL persistence/Runner/readback tests. Historical live planner and
 function-calling checks used DeepSeek, but the latter used mock retrieval data.
 These checks do not establish a live default Worker-to-Graph E2E.
+
+Source retention, request identity and derived report decisions are recorded in
+[the integration supplement](2026-10-28-source-selection-and-derived-reports.md).

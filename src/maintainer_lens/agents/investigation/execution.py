@@ -44,6 +44,9 @@ def with_tool_step_controls(
             async with timeout_scope:
                 result = await runner(state)
 
+            if timeout_scope.expired():
+                raise TimeoutError("Investigation tool step deadline exceeded")
+
             outcome = "skipped" if result["skipped_duplicate"] else "succeeded"
             return result
 

@@ -17,12 +17,15 @@ MaintainerLens is an Apache-2.0 project under active development. V1 targets **p
 - **Durable results:** an injected Snapshot → Graph → result processor,
   lease-fenced versioned JSONB storage and HTTP readback of completed results.
 
-**Integration boundary:** the default Worker still fetches and saves an Issue
-snapshot through `services/issue_investigator.investigate_issue()`. It does not
-invoke the Graph processor yet. A default HTTP-submitted task therefore normally
-returns `result: null`. M4 remains in progress; final report writing, Checkpointer,
-HITL and cross-run memory are not implemented. A passing isolated Graph test or
-infrastructure CI job is not a live Worker-to-Graph investigation.
+**Integration boundary:** the default Worker now invokes the Snapshot → Graph →
+result processor using prepared History knowledge. Its backend
+search profile has now expanded to at most three rounds, Chinese output and a
+120-second Graph deadline. Optional explicit Source UUIDs and model-selected
+follow-up tools are wired, and GET derives a Markdown report from saved analysis.
+The earlier bounded History-only smoke passed per maintainer feedback; new
+Source/full-chain regressions and paid smoke await execution. M4 is still in
+progress; Checkpointer, HITL and cross-run memory are not implemented. Wiring tests with
+fake I/O are not a live Worker-to-Graph investigation.
 
 [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [Architecture decisions](docs/ADR/README.md)
@@ -38,13 +41,14 @@ Client → FastAPI POST /investigations
     → RabbitMQ pending/retry/dead-letter queues
     → independent Worker (handler, task claim, claim token, lease renewal)
     → GitHub public Issue fetch + fenced IssueSnapshot persistence
-    → task status
+    → History + optional explicit Source + bounded tool/analysis → fenced result commit
+    → guarded task-success commit
     → FastAPI GET /investigations/{task_id}
 ```
 
 The API, dispatcher and worker are independent long-running Python services. The database, Redis and RabbitMQ services run separately; Alembic migration is a one-shot job. Message processing has **at-least-once semantics**. Claim tokens, expiring leases, guarded writes and transactional Outbox handle duplicates and partial failures; these mechanisms do not promise exactly-once external LLM calls.
 
-### Callable knowledge and Agent modules (not currently a Worker report path)
+### Knowledge and investigation modules
 
 ```text
 Pinned public repository → secure blob fetch → syntax-aware chunks
@@ -67,7 +71,8 @@ Initial source evaluation: eight bilingual queries (only two distinct relevant t
 ## Investigation results
 
 `GET /investigations/{task_id}` returns task identity/status, an optional `issue`
-snapshot and an optional typed `result`. A completed Graph result includes the
+snapshot, the selected `source_index_id`, an optional typed `result` and
+`report_markdown` derived from that result. A completed Graph result includes the
 structured preliminary analysis, complete returned History/Source evidence,
 the actual latest analysis excerpts, terminal next step, search round and
 routing reason.
@@ -79,9 +84,49 @@ error. GET does not invoke providers or backfill old tasks.
 
 Both `draft_preliminary_report` and `needs_more_evidence` are legitimate Graph
 outcomes. Task success means execution and required writes completed, not that
-the investigation established a root cause. The ready marker does not generate
-a final report. See the [architecture](docs/ARCHITECTURE.md) for execution,
+the investigation established a root cause. The report deterministically formats
+summary, cited findings, hypotheses, open questions and actual analysis excerpts.
+It makes no extra model call and remains explicit about insufficient evidence. See the [architecture](docs/ARCHITECTURE.md) for execution,
 validation and persistence boundaries.
+
+The intended product flow is Issue URL → backend-managed knowledge preparation
+and investigation → Markdown report, without asking users for index UUIDs.
+Currently `/docs` is Swagger API documentation: POST accepts repository/Issue
+number and an optional prepared Source UUID, then GET exposes asynchronous status
+and output. URL-only intake and automatic bounded knowledge preparation are not
+yet wired. A Source index ID identifies prepared knowledge; it is independent of
+the investigation task ID and does not require a previous investigation task.
+
+## Default Worker profile
+
+Configure the existing `LLM_BASE_URL`, `LLM_MODEL_NAME`, `LLM_API_KEY`,
+`EMBEDDING_BASE_URL`, `EMBEDDING_MODEL` and applicable embedding credentials in
+your local environment. Dimensions and model must match prepared History
+embeddings with provider identity `openai-compatible`. This identity is the
+stored backend label, not a requirement to use a particular vendor.
+
+The Worker validates required provider configuration before opening the broker
+connection. Compose forwards these settings only to the Worker; API and
+Dispatcher do not require provider credentials. An explicitly injected
+investigator also bypasses default provider assembly.
+
+The backend profile uses at most five hits per retriever, up to three search
+rounds, Chinese analysis, a 120-second whole-Graph deadline and 60 seconds per
+tool step. Tool Runner selects one allowed search per follow-up; Query Planner
+remains an alternative application option. Pass optional `source_index_id` in
+POST JSON to enable a prepared Source index. The Worker validates repository,
+ready status and embedding identity before GitHub/retrieval; building indexes
+use bounded retries and other invalid selections fail without fallback. It does not ingest history, refresh embeddings or build
+source indexes automatically. Empty matching History produces a legitimate
+`needs_more_evidence` result; it does not trigger automatic knowledge preparation.
+
+Per attempt, initial retrieval makes one query embedding per enabled corpus;
+at most two follow-up searches and three analyses can occur. Each executed tool
+step additionally makes selection and feedback Chat requests: at most seven
+Chat requests total. Duplicate queries or no new evidence stop early. Running the
+default Worker can incur provider charges; existing bounded delivery retries
+can repeat those requests. The
+Graph deadline excludes GitHub snapshot acquisition and result commit.
 
 ## Requirements
 
@@ -105,7 +150,8 @@ cp .env.example .env
 ```
 
 Edit `.env` and set the PostgreSQL, Redis, and RabbitMQ credentials and host-mode
-connection URLs. **Do not commit `.env`, tokens, or credentials.** If existing
+connection URLs, plus the LLM/embedding settings needed by the default Worker.
+**Do not commit `.env`, tokens, or credentials.** If existing
 containers use persistent data volumes, retain their existing credentials:
 changing `POSTGRES_PASSWORD` or `RABBITMQ_DEFAULT_PASS` in Compose does not
 reset users/passwords already stored in those volumes.
@@ -271,6 +317,8 @@ RUN_POSTGRES_INTEGRATION=0 uv run pytest -q \
   tests/test_investigation_contracts.py \
   tests/agents/test_investigation_application_execution.py \
   tests/api/test_investigations.py \
+  tests/test_worker_startup.py \
+  tests/test_worker_production_wiring.py \
   tests/integration/test_investigation_processor_pipeline.py \
   tests/integration/test_investigation_result_readback.py
 
@@ -280,6 +328,207 @@ RUN_POSTGRES_INTEGRATION=1 uv run pytest -q \
   tests/integration/test_investigation_processor_pipeline.py \
   tests/integration/test_investigation_result_readback.py
 ```
+
+### Explicit Source index validation
+
+Source investigations select an existing ready index UUID and verify repository,
+embedding provider/model/dimensions before query embeddings. The Source searcher
+factory now requires `embedding_dimensions`. The read-only helper returns
+immutable revision/chunker metadata; it does not build indexes or choose latest.
+API submission, Task/Outbox, message publication and Worker now carry the selected
+UUID. Older messages omitting it remain History-only and must match their task.
+
+Task storage now includes optional `source_index_id` (native UUID). Apply the
+additive migration manually before using the updated ORM with an existing
+database; requests omitting the index continue to leave this field NULL. The UUID
+has no foreign key, preserving the requested identity if an index is removed.
+Execution must still validate index availability and ownership.
+
+```bash
+# Manual database upgrade; adds a column, not a new table
+uv run alembic upgrade head
+
+# Offline model/DDL checks, without loading Alembic env or connecting to services
+RUN_POSTGRES_INTEGRATION=0 uv run pytest -q \
+  tests/integration/test_investigation_task_source_index_schema.py
+
+# After the upgrade: UUID persistence, lifecycle and retention checks
+RUN_POSTGRES_INTEGRATION=1 uv run pytest -q \
+  tests/integration/test_investigation_task_source_index_schema.py
+```
+
+```bash
+# Isolated validation and Graph adapter behavior; no external services
+RUN_POSTGRES_INTEGRATION=0 uv run pytest -q \
+  tests/integration/test_investigation_source_index_selection.py \
+  tests/agents/test_investigation_graph_source.py
+
+# Migrated PostgreSQL/pgvector; embeddings are fake, no paid provider calls
+RUN_POSTGRES_INTEGRATION=1 uv run pytest -q \
+  tests/integration/test_investigation_source_index_selection.py \
+  tests/integration/test_investigation_source_searcher_postgres.py
+```
+
+### Opt-in live History Worker smoke
+
+The [live smoke test](tests/integration/test_worker_graph_live_smoke.py) uses
+real GitHub, embedding/LLM endpoints, PostgreSQL/pgvector and RabbitMQ. It runs
+the current default Worker without a Source selection on [sampleproject Issue #225](https://github.com/pypa/sampleproject/issues/225)
+with one real historical fixture, [Issue #221](https://github.com/pypa/sampleproject/issues/221).
+This is a plumbing smoke test, not a claim that the historical Issue explains
+the investigated Issue. Either valid Graph terminal outcome is accepted.
+
+Use an existing migrated non-production database and broker, with provider
+settings already configured. The database must have no History records for
+`pypa/sampleproject`; otherwise the test skips before provider calls. Do not run
+History ingestion for that repository concurrently. The fixture inserts rather
+than overwrites knowledge, then deletes only its task and unchanged inserted
+History row; foreign keys clean up its snapshot/result/embedding records.
+
+```bash
+# Offline request-limit/diagnostic guards; the real smoke is skipped
+RUN_LIVE_WORKER_GRAPH_SMOKE=0 uv run pytest -q \
+  tests/integration/test_worker_graph_live_smoke.py
+
+# Explicitly authorized paid smoke; all three flags are required
+RUN_LIVE_WORKER_GRAPH_SMOKE=1 \
+RUN_POSTGRES_INTEGRATION=1 \
+RUN_RABBITMQ_INTEGRATION=1 \
+uv run pytest -q -s tests/integration/test_worker_graph_live_smoke.py
+```
+
+Hard request hooks permit at most four GitHub requests, four embedding requests
+(one document plus up to three searches) and seven Chat requests, each with
+`max_tokens <= 1500`. The previously reported 4/2/1 success used the initial
+single-round profile; that result does not validate the expanded profile.
+The test has a 240-second operation deadline. Unique temporary broker queues
+park retries without redelivery, and teardown cancels the Worker and removes
+only test resources. Remote cancellation does not guarantee billing stops.
+Diagnostics show counts/status/finish reason, not credentials or model text.
+
+The test starts at task creation and real message publication; it does not
+exercise POST/Outbox Dispatcher. GET uses the real route through an in-process
+ASGI client, not a separately deployed API server. No migrations or GitHub
+writes run. Normal tests/CI skip this paid case unless explicitly enabled.
+The maintainer reported a successful bounded History-only run with normal model
+completion; this does not establish Source integration or semantic accuracy.
+
+### Knowledge-preparation budget profiles
+
+`GET /investigations/budget-profiles` describes current choices without querying
+task data or invoking providers. POST accepts `knowledge_budget_profile`, default
+`standard`. The server resolves it once and stores a versioned `knowledge_budget`
+JSONB snapshot with Task/Outbox submission; GET task details returns that stored
+snapshot. Retries must consume stored numbers, never re-resolve a profile name.
+Messages carry task identity rather than a second copy of this configuration.
+
+| Profile | Source files | Source bytes | Source chunks | History parents | Preparation deadline |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `small` | 20 | 256 KiB | 100 | 1 | 300 seconds |
+| `standard` (default) | 500 | 8 MiB | 2,000 | 3 | 900 seconds |
+| `large` | 2,000 | 8 MiB | 4,000 | 5 | 1,800 seconds |
+| `unlimited` | null | null | null | null | null |
+
+For example, the current submission contract accepts:
+
+```json
+{
+  "repository": "pypa/sampleproject",
+  "issue_number": 225,
+  "knowledge_budget_profile": "standard"
+}
+```
+
+Null means no task-level preparation limit; it is not infinity/zero, and it does
+not disable content validation, per-request transport controls or Graph's
+three-round/120-second budget. Frontend code can discover choices through the
+read-only endpoint; no frontend is implemented by this change.
+
+Profile discovery, validation, submission snapshots and readback are implemented.
+Automatic preparation execution and URL-only intake are still pending. In
+particular, the existing 8 MiB in-memory downloader and bounded History helper
+must be adapted before unlimited preparation is actually supported. Selecting a
+profile currently records configuration; it does not enable the unwired path.
+Paid acceptance continues to use a small repository rather than maximum budgets.
+
+### Preparation mode and budget migration
+
+The **not-yet-applied** `e8b3c7d9a204` revision now adds three task columns:
+`auto_prepare_knowledge`, `prepared_source_index_id` and `knowledge_budget`,
+plus mode/object checks. Apply this revised file manually before updated ORM
+usage. Existing tasks/inserts receive false mode, no prepared index and the
+original standard-v1 snapshot. No new table or subsequent revision is needed.
+Do not toggle rows manually to enable an unwired automatic execution path.
+
+```bash
+uv run alembic upgrade head
+uv run alembic current  # expected head: e8b3c7d9a204
+
+# Offline contracts, DDL and API checks; no external services
+RUN_POSTGRES_INTEGRATION=0 RUN_RABBITMQ_INTEGRATION=0 uv run pytest -q \
+  tests/integration/test_investigation_knowledge_preparation_schema.py \
+  tests/integration/test_investigation_budget_snapshot.py \
+  tests/test_investigation_contracts.py \
+  tests/api/test_investigations.py \
+  tests/integration/test_investigation_result_readback.py \
+  tests/test_investigation_source_contracts_and_reports.py
+
+# After manual upgrade: defaults, checks, snapshots, retries and readback
+RUN_POSTGRES_INTEGRATION=1 uv run pytest -q \
+  tests/integration/test_investigation_knowledge_preparation_schema.py \
+  tests/integration/test_investigation_budget_snapshot.py \
+  tests/integration/test_investigation_task_source_index_schema.py \
+  tests/integration/test_investigation_result_readback.py
+```
+
+### Complete Source/History investigation acceptance
+
+These tests use a migrated disposable PostgreSQL/pgvector database and isolated
+real RabbitMQ queues. The ordinary E2E cases fake only upstream providers and
+cover POST, atomic Task/Outbox, real dispatch, default Worker, required writes,
+pre-ACK database checks, duplicate delivery and GET/result/report readback.
+Do not run a competing Dispatcher against the test database. A foreign Outbox
+claim is rejected inside its transaction before publication.
+
+```bash
+# Offline UUID/report tests and real compiled Graph/provider protocol tests
+RUN_POSTGRES_INTEGRATION=0 RUN_RABBITMQ_INTEGRATION=0 uv run pytest -q \
+  tests/test_investigation_source_contracts_and_reports.py \
+  tests/test_worker_production_wiring.py \
+  tests/agents/test_investigation_execution.py \
+  tests/integration/test_worker_graph_source_e2e.py
+
+# Real PostgreSQL and RabbitMQ; providers are fake, paid case remains skipped
+RUN_LIVE_SOURCE_WORKER_SMOKE=0 \
+RUN_POSTGRES_INTEGRATION=1 RUN_RABBITMQ_INTEGRATION=1 uv run pytest -q \
+  tests/integration/test_worker_graph_source_e2e.py
+
+# Authorized paid acceptance: the fixture prepares its own Source/History data
+RUN_LIVE_SOURCE_WORKER_SMOKE=1 \
+RUN_POSTGRES_INTEGRATION=1 RUN_RABBITMQ_INTEGRATION=1 uv run pytest -q -s \
+  tests/integration/test_worker_graph_source_e2e.py
+```
+
+The paid fixture needs no index UUID or manually submitted task. It resolves a
+public sampleproject revision, fetches its manifest and verifies one small Python
+blob, then chunks/embeds only one real Source excerpt using the existing writer.
+The writer generates an index UUID; the test submits it internally through POST.
+This is a deliberately partial smoke index, not a complete repository build.
+A unique fixture version prevents reuse of existing indexes; teardown deletes
+only its owned index, not any pre-existing knowledge. The test also requires an
+empty sampleproject History corpus, inserts/embeds one real Issue (#221), and
+investigates #225. Fixtures prepare knowledge; the production Worker still does
+not automatically build it. Caps are GitHub 8, embeddings 6 and Chat 7,
+with one input per embedding request,
+1500 maximum output tokens per Chat request and a 300-second operation deadline.
+Retries are parked; fixtures clean up only owned rows and queues. GET uses the
+real route in-process. Valid `needs_more_evidence` is accepted. Tool selection
+may be skipped after sufficient initial evidence, so a live pass alone does not
+prove a multi-round path or semantic accuracy; fake-provider regressions force
+those branches. Assistant-supplied tests have not been executed by the assistant.
+
+The maintainer confirmed the bounded real Source+History smoke passed. Production
+automatic knowledge preparation and URL-only intake remain separate pending work.
 
 ### Repository retrieval evaluation
 
@@ -351,16 +600,20 @@ replace the local Compose/full GitHub API smoke test.
 
 3. Save the returned `task_id` (HTTP **202 Accepted**, initial status `pending`).
 4. Call `GET /investigations/{task_id}` until `status` becomes `succeeded`.
-5. Confirm `issue` is non-null and contains the GitHub title, body, state,
-   source URL, and timestamps. With the default snapshot-only Worker, `result`
-   remains null; this smoke test does not exercise the Graph processor.
+5. Confirm `issue` contains the GitHub snapshot and `result` contains the
+   preliminary investigation. Without matching prepared History, a successful
+   task can legitimately return `next_step: needs_more_evidence`.
+
+This path uses real GitHub and configured embedding/LLM endpoints and may incur
+charges. Prepare knowledge separately if you need evidence-backed findings.
+Legacy snapshot-only successes still return a null result and are not backfilled.
 
 External GitHub availability and rate limits can affect completion time. If a
 request fails, inspect `docker compose logs -f api dispatcher worker`.
 
 ## Current milestone and contribution workflow
 
-The current M4 integration work should reuse the production Worker and `src/maintainer_lens/investigation_runner.py` rather than introduce a competing task lifecycle. Before work, review `docs/ARCHITECTURE.md`, current source and tests; keep `agents/investigation_graph.py` strictly for node/edge composition. M5 will add persistent LangGraph checkpointing, human-in-the-loop decisions and trusted memory; M6 will focus on release-quality reliability, evaluation, UI and a Chinese README. V2 adds private repository authorization.
+The M4 Worker binds prepared History, optional explicit Source and bounded tools to the existing Graph processor and root runner. Derived Markdown reports are implemented. New regression/live acceptance, semantic quality evaluation and CI/review remain. Before work, review `docs/ARCHITECTURE.md`, current source and tests; keep `agents/investigation_graph.py` strictly for node/edge composition. M5 will add persistent LangGraph checkpointing, human-in-the-loop decisions and trusted memory; M6 will focus on release-quality reliability, evaluation, UI and a Chinese README. V2 adds private repository authorization.
 
 Use `feat/**` / `fix/**` / `docs/**` branches and reviewed squash-merge PRs; do not push to `main` directly. Before merging run Ruff, default pytest, appropriate opt-in integration tests and GitHub CI. Clearly label which integration levels actually ran. See [Roadmap](docs/ROADMAP.md) for milestones and [ADR](docs/ADR/) for established technical decisions.
 

@@ -2,6 +2,7 @@
 
 import json
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -26,6 +27,7 @@ def decode_investigation_result(
     task_id: str,
     repository: str,
     issue_number: int,
+    source_index_id: UUID | None = None,
 ) -> InvestigationResult:
     """Decode version 1 JSON without executing investigation dependencies.
 
@@ -50,7 +52,11 @@ def decode_investigation_result(
     except (TypeError, ValueError) as exc:
         raise StoredInvestigationResultError("Invalid stored result payload") from exc
 
-    if (result.repository, result.issue_number) != (repository, issue_number):
+    if (result.repository, result.issue_number, result.source_index_id) != (
+        repository,
+        issue_number,
+        source_index_id,
+    ):
         raise StoredInvestigationResultError("Stored result does not match its task")
 
     return result
@@ -95,7 +101,11 @@ async def upsert_investigation_result(
 
     locked_task = (
         await session.execute(
-            select(InvestigationTask.repository, InvestigationTask.issue_number)
+            select(
+                InvestigationTask.repository,
+                InvestigationTask.issue_number,
+                InvestigationTask.source_index_id,
+            )
             .where(InvestigationTask.id == task_id)
             .with_for_update()
         )
@@ -116,7 +126,11 @@ async def upsert_investigation_result(
     if owned_task_id is None:
         return False
 
-    if tuple(locked_task) != (payload["repository"], payload["issue_number"]):
+    if tuple(locked_task) != (
+        payload["repository"],
+        payload["issue_number"],
+        UUID(payload["source_index_id"]) if payload["source_index_id"] else None,
+    ):
         raise InvalidInvestigationResultError("Result does not match its task identity")
 
     statement = insert(InvestigationResultRecord).values(

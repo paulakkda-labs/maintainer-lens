@@ -13,4 +13,10 @@ Keep context, decisions and consequences here. Development branch names, test-se
 | [2026-10-27-versioned-source-and-history-rag.md](2026-10-27-versioned-source-and-history-rag.md) | Accepted (historical) | Commit-pinned source and separate history retrieval; exact pgvector, selected hybrid |
 | [2026-10-27-bounded-modular-agent.md](2026-10-27-bounded-modular-agent.md) | Accepted | Modular bounded LangGraph, application execution boundary and durable preliminary results |
 
-Checkpoint recovery, HITL and private-repository access remain future design work. The accepted ownership model reuses the existing task runner and status table. The Graph processor is implemented but not connected to the default Worker; that integration must preserve these decisions.
+| [2026-10-28-source-selection-and-derived-reports.md](2026-10-28-source-selection-and-derived-reports.md) | Accepted | Explicit Source identity across delivery/storage, bounded Worker tools and derived reports |
+
+Checkpoint recovery, HITL and private-repository access remain future design work.
+The Worker binds prepared History, optional explicit Source and bounded tools;
+GET derives a Markdown report without extra inference. The original task runner,
+status table, claim fencing and ACK semantics remain authoritative. New Source/
+full-chain acceptance is separate from implementation and the earlier History smoke.
