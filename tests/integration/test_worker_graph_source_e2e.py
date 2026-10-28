@@ -9,13 +9,14 @@ tests exercise only offline request guards.
 """
 
 import asyncio
+import base64
 import json
 import os
 from collections import Counter
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from hashlib import sha256
+from hashlib import sha1, sha256
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -23,7 +24,7 @@ import aio_pika
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 import maintainer_lens.services.investigation_submission as submission
 import maintainer_lens.services.outbox_dispatcher as dispatcher
@@ -58,6 +59,9 @@ from maintainer_lens.messaging.topology import (
 )
 from maintainer_lens.schemas.investigation_contracts import InvestigationResult
 from maintainer_lens.schemas.repository import RepositorySource
+from maintainer_lens.services.investigation_preparation import (
+    AUTO_SOURCE_CHUNKER_VERSION,
+)
 from maintainer_lens.services.investigation_report import render_investigation_report
 from maintainer_lens.services.investigation_source_index import (
     get_investigation_source_index,
@@ -104,6 +108,7 @@ class _Budget:
     )
     statuses: dict = field(default_factory=dict)
     finish_reasons: list = field(default_factory=list)
+    completion_metrics: list = field(default_factory=list)
     source_tree_sha: str | None = None
     source_blob_sha: str | None = None
     source_requests: Counter = field(default_factory=Counter)
@@ -174,7 +179,7 @@ class _Budget:
         tokens = payload.get("max_tokens")
         if (
             type(tokens) is not int
-            or not 1 <= tokens <= 1500
+            or not 1 <= tokens <= 4096
             or len(request.content) > 64_000
         ):
             raise _BudgetExceeded("Smoke chat payload/token limit reached")
@@ -197,8 +202,11 @@ class _Budget:
             self.statuses[stage] = response.status_code
             if stage == "llm" and response.is_success:
                 await response.aread()
+                payload, choice = {}, {}
                 try:
-                    reason = response.json()["choices"][0]["finish_reason"]
+                    payload = response.json()
+                    choice = payload["choices"][0]
+                    reason = choice["finish_reason"]
                 except (ValueError, KeyError, IndexError, TypeError):
                     reason = "other"
                 self.finish_reasons.append(
@@ -206,6 +214,34 @@ class _Budget:
                     if reason in ("stop", "tool_calls", "length", "content_filter")
                     else "other"
                 )
+                message = choice.get("message") if isinstance(choice, dict) else None
+                metrics = {}
+                for field_name in ("content", "reasoning_content"):
+                    value = (
+                        message.get(field_name) if isinstance(message, dict) else None
+                    )
+                    metrics[f"{field_name}_characters"] = (
+                        len(value) if isinstance(value, str) else 0
+                    )
+                usage = payload.get("usage") if isinstance(payload, dict) else None
+                if isinstance(usage, dict):
+                    for field_name in (
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "total_tokens",
+                    ):
+                        value = usage.get(field_name)
+                        if type(value) is int and value >= 0:
+                            metrics[field_name] = value
+                    details = usage.get("completion_tokens_details")
+                    reasoning_tokens = (
+                        details.get("reasoning_tokens")
+                        if isinstance(details, dict)
+                        else None
+                    )
+                    if type(reasoning_tokens) is int and reasoning_tokens >= 0:
+                        metrics["reasoning_tokens"] = reasoning_tokens
+                self.completion_metrics.append(metrics)
 
         return record
 
@@ -214,6 +250,7 @@ class _Budget:
             "requests": dict(self.counts),
             "statuses": dict(self.statuses),
             "finish_reasons": list(self.finish_reasons),
+            "completion_metrics": list(self.completion_metrics),
         }
 
 
@@ -256,6 +293,7 @@ class _Watch:
     task_id: str
     expected_status: str = "succeeded"
     budget: _Budget | None = None
+    snapshot_on_failure: bool = False
     acknowledgements: int = 0
     event: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -271,8 +309,13 @@ class _Watch:
         if self.expected_status == "succeeded":
             assert snapshot is not None and record is not None
             assert task.claim_token is None and task.lease_expires_at is None
+            if task.auto_prepare_knowledge:
+                assert task.prepared_source_index_id is not None
+                assert record.result_payload["source_index_id"] == str(
+                    task.prepared_source_index_id
+                )
         else:
-            assert snapshot is None and record is None
+            assert (snapshot is not None) == self.snapshot_on_failure and record is None
         await message.ack()
         self.acknowledgements += 1
         self.event.set()
@@ -315,10 +358,10 @@ async def _stop(operation):
         raise outcome
 
 
-async def _wait(operation, event):
+async def _wait(operation, event, *, timeout_seconds=150):
     waiter = asyncio.create_task(event.wait())
     try:
-        async with asyncio.timeout(150):
+        async with asyncio.timeout(timeout_seconds):
             done, _ = await asyncio.wait(
                 {operation, waiter}, return_when=asyncio.FIRST_COMPLETED
             )
@@ -609,6 +652,7 @@ async def _post_dispatch_read(
     *,
     transport=None,
     budget=None,
+    automatic=False,
 ):
     app = FastAPI()
     app.state.session_factory = factory
@@ -638,8 +682,13 @@ async def _post_dispatch_read(
             transport=httpx.ASGITransport(app), base_url="http://test"
         ) as client:
             response = await client.post(
-                "/investigations",
+                "/investigations/from-url" if automatic else "/investigations",
                 json={
+                    "issue_url": f"https://github.com/{repository}/issues/{issue_number}",
+                    "knowledge_budget_profile": "small",
+                }
+                if automatic
+                else {
                     "repository": repository,
                     "issue_number": issue_number,
                     "source_index_id": str(source_index_id)
@@ -658,13 +707,17 @@ async def _post_dispatch_read(
                         InvestigationOutboxEvent.task_id == watch.task_id
                     )
                 )
+            assert task.auto_prepare_knowledge == automatic
             assert task.source_index_id == source_index_id
+            assert event.payload["auto_prepare_knowledge"] == automatic
             assert event.payload["source_index_id"] == (
                 str(source_index_id) if source_index_id else None
             )
             assert event.published_at is None
             assert await dispatcher.dispatch_one_outbox_event(factory, broker.exchange)
-            await _wait(operation, watch.event)
+            await _wait(
+                operation, watch.event, timeout_seconds=450 if automatic else 150
+            )
             detail = await client.get(f"/investigations/{watch.task_id}")
             assert detail.status_code == 200
             data = detail.json()
@@ -684,10 +737,16 @@ async def _post_dispatch_read(
                 result = InvestigationResult.model_validate_json(
                     json.dumps(data["result"]), strict=True
                 )
-                assert result.source_index_id == source_index_id
+                effective_index = (
+                    UUID(data["prepared_source_index_id"])
+                    if automatic
+                    else source_index_id
+                )
+                assert result.source_index_id == effective_index
+                assert data["auto_prepare_knowledge"] == automatic
                 assert data["report_markdown"] == render_investigation_report(result)
                 assert result.history_evidence and result.analysis_evidence
-                assert bool(result.source_evidence) == (source_index_id is not None)
+                assert bool(result.source_evidence) == (effective_index is not None)
                 watch.event.clear()
                 await publish_investigation(
                     broker.exchange,
@@ -695,6 +754,7 @@ async def _post_dispatch_read(
                     repository,
                     issue_number,
                     source_index_id,
+                    auto_prepare_knowledge=automatic,
                 )
                 await _wait(operation, watch.event)
                 assert watch.acknowledgements == 2
@@ -944,7 +1004,7 @@ async def test_paid_source_history_post_outbox_worker_smoke(monkeypatch):
     "stage,suffix,payload",
     [
         ("embedding", "/embeddings", {"input": ["text"]}),
-        ("llm", "/chat/completions", {"max_tokens": 1500}),
+        ("llm", "/chat/completions", {"max_tokens": 4096}),
     ],
 )
 async def test_paid_source_request_caps_are_enforced_offline(stage, suffix, payload):
@@ -1082,3 +1142,532 @@ async def test_cleanup_removes_owned_source_fixture_but_preserves_other_index(
                     RepositoryIndex.id.in_((owned_id, other_id))
                 )
             )
+
+
+class _AutomaticProviders(_Providers):
+    """Cold-start GitHub fixtures; real builder, leases, embeddings and Graph."""
+
+    def __init__(self, repository, *, over_budget=False):
+        super().__init__(repository, source=True)
+        self.over_budget = over_budget
+        self.content = b"def cleanup():\n    return True\n"
+        self.blob_sha = sha1(
+            f"blob {len(self.content)}\0".encode() + self.content, usedforsecurity=False
+        ).hexdigest()
+        self.source_calls = Counter()
+        self.document_inputs = []
+
+    async def __call__(self, request):
+        path, prefix = request.url.path, f"/repos/{self.repository}"
+        if request.url.host == "api.github.com":
+            self.requests["github"] += 1
+            if path == prefix:
+                return httpx.Response(
+                    200, json={"private": False, "default_branch": "main"}
+                )
+            if path == prefix + "/branches/main":
+                self.source_calls["branch"] += 1
+                return httpx.Response(
+                    200,
+                    json={
+                        "commit": {
+                            "sha": "a" * 40,
+                            "commit": {"tree": {"sha": "b" * 40}},
+                        }
+                    },
+                )
+            if path == prefix + "/git/trees/" + "b" * 40:
+                self.source_calls["tree"] += 1
+                return httpx.Response(
+                    200,
+                    json={
+                        "sha": "b" * 40,
+                        "truncated": False,
+                        "tree": [
+                            {
+                                "path": f"source{n}.py",
+                                "type": "blob",
+                                "mode": "100644",
+                                "sha": self.blob_sha,
+                                "size": len(self.content),
+                            }
+                            for n in range(21 if self.over_budget else 1)
+                        ],
+                    },
+                )
+            if path == prefix + "/git/blobs/" + self.blob_sha:
+                self.source_calls["blob"] += 1
+                return httpx.Response(
+                    200,
+                    json={
+                        "sha": self.blob_sha,
+                        "size": len(self.content),
+                        "encoding": "base64",
+                        "content": base64.b64encode(self.content).decode(),
+                    },
+                )
+            if path == prefix + "/issues":
+                return httpx.Response(200, json=[self.issue(124)])
+            if path == prefix + "/issues/124/comments":
+                return httpx.Response(200, json=[])
+            if path == prefix + "/issues/123":
+                return httpx.Response(200, json=self.issue(123))
+            raise AssertionError(f"Unexpected automatic fixture request: {path}")
+        if path.endswith("/embeddings"):
+            payload = json.loads(request.content)
+            self.requests["embedding"] += 1
+            self.document_inputs.extend(payload["input"])
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"index": n, "embedding": [1.0, 0.0, 0.0]}
+                        for n, _ in enumerate(payload["input"])
+                    ]
+                },
+            )
+        return await super().__call__(request)
+
+    def issue(self, number):
+        return {
+            "number": number,
+            "title": "Connection cleanup",
+            "body": "Cleanup discussion.",
+            "state": "open",
+            "html_url": f"https://github.com/{self.repository}/issues/{number}",
+            "created_at": "2026-10-01T00:00:00Z",
+            "updated_at": "2026-10-28T00:00:00Z",
+        }
+
+
+@requires_infrastructure
+@pytest.mark.parametrize("over_budget", [False, True])
+async def test_url_only_cold_start_and_ready_index_reuse_with_real_worker(
+    monkeypatch, over_budget
+):
+    settings = _fake_settings(get_settings())
+    repository = f"auto-e2e/repo-{uuid4().hex}"
+    providers = _AutomaticProviders(repository, over_budget=over_budget)
+    engine = create_db_engine(settings.database_url.get_secret_value())
+    factory = create_session_factory(engine)
+    task_ids = []
+    try:
+        async with _broker(settings) as broker:
+            prepared_id = None
+            for _ in range(1 if over_budget else 2):
+                task_id = str(uuid4())
+                task_ids.append(task_id)
+                watch = _Watch(
+                    factory,
+                    task_id,
+                    expected_status="failed" if over_budget else "succeeded",
+                    snapshot_on_failure=over_budget,
+                )
+                with monkeypatch.context() as patch:
+                    data = await _post_dispatch_read(
+                        patch,
+                        settings,
+                        factory,
+                        broker,
+                        watch,
+                        repository,
+                        123,
+                        None,
+                        automatic=True,
+                        transport=httpx.MockTransport(providers),
+                    )
+                if not over_budget:
+                    current = data["prepared_source_index_id"]
+                    assert current and (prepared_id is None or prepared_id == current)
+                    prepared_id = current
+                    assert data["result"]["search_round"] == 2
+        if over_budget:
+            assert providers.requests["embedding"] == providers.requests["llm"] == 0
+            assert providers.source_calls["blob"] == 0
+            async with factory() as session:
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(RepositoryIndex)
+                        .where(RepositoryIndex.repository == repository)
+                    )
+                    == 0
+                )
+        else:
+            assert providers.source_calls == Counter(branch=2, tree=1, blob=1)
+            # Only one source and one unchanged History document are embedded;
+            # all other calls are retrieval queries from two Graph executions.
+            assert providers.document_inputs.count(providers.content.decode()) == 1
+            assert (
+                sum(
+                    text.startswith("issue #124:") for text in providers.document_inputs
+                )
+                == 1
+            )
+            async with factory() as session:
+                indexes = (
+                    await session.scalars(
+                        select(RepositoryIndex).where(
+                            RepositoryIndex.repository == repository
+                        )
+                    )
+                ).all()
+                assert len(indexes) == 1 and indexes[0].status == "ready"
+                assert indexes[0].chunker_version == AUTO_SOURCE_CHUNKER_VERSION
+    finally:
+        try:
+            for task_id in task_ids:
+                await _cleanup(
+                    factory,
+                    task_id,
+                    repository,
+                    fake=True,
+                    source_chunker_version=AUTO_SOURCE_CHUNKER_VERSION,
+                )
+        finally:
+            await engine.dispose()
+
+
+@dataclass
+class _AutomaticBudget(_Budget):
+    """Hard paid-smoke caps for the actual automatic small-repository path."""
+
+    limits: dict = field(
+        default_factory=lambda: {"github": 30, "embedding": 12, "llm": 7}
+    )
+    branch: str | None = None
+    tree: str | None = None
+    blobs: set = field(default_factory=set)
+    history_number: int | None = None
+    embedding_characters: int = 0
+
+    async def github(self, request):
+        prefix = f"/repos/{LIVE_REPOSITORY}"
+        path, params = request.url.path, dict(request.url.params)
+        operation = None
+        allowed = path in (prefix, f"{prefix}/issues/{TARGET_ISSUE}") and not params
+        if (
+            self.branch is not None
+            and path == f"{prefix}/branches/{self.branch}"
+            and not params
+        ):
+            operation, allowed = "branch", True
+        if (
+            self.tree is not None
+            and path == f"{prefix}/git/trees/{self.tree}"
+            and params == {"recursive": "1"}
+        ):
+            operation, allowed = "tree", True
+        if path.removeprefix(f"{prefix}/git/blobs/") in self.blobs and not params:
+            operation, allowed = "blob", True
+        if path == f"{prefix}/issues" and params == {
+            "state": "all",
+            "sort": "updated",
+            "direction": "desc",
+            "page": "1",
+            "per_page": "1",
+        }:
+            operation, allowed = "history", True
+        if self.history_number is not None:
+            if path == f"{prefix}/issues/{self.history_number}/comments" and params == {
+                "page": "1",
+                "per_page": "5",
+            }:
+                operation, allowed = "comments", True
+            if path == f"{prefix}/pulls/{self.history_number}" and not params:
+                operation, allowed = "pull", True
+        if (
+            request.method != "GET"
+            or request.url.scheme != "https"
+            or request.url.host != "api.github.com"
+            or not allowed
+        ):
+            raise _BudgetExceeded("Automatic smoke GitHub scope exceeded")
+        if operation and self.source_requests[operation] >= (
+            20 if operation == "blob" else 1
+        ):
+            raise _BudgetExceeded("Automatic smoke operation cap reached")
+        self.charge("github")
+        if operation:
+            self.source_requests[operation] += 1
+
+    async def embedding(self, request):
+        payload = self.payload(request, "/embeddings")
+        inputs = payload.get("input")
+        if (
+            not isinstance(inputs, list)
+            or not 1 <= len(inputs) <= 20
+            or any(
+                not isinstance(item, str) or not 1 <= len(item) <= 6000
+                for item in inputs
+            )
+        ):
+            raise _BudgetExceeded("Automatic smoke embedding input limit reached")
+        characters = sum(map(len, inputs))
+        if self.embedding_characters + characters > 120_000:
+            raise _BudgetExceeded("Automatic smoke embedding character cap reached")
+        self.charge("embedding")
+        self.embedding_characters += characters
+
+    def response(self, stage):
+        original = super().response(stage)
+
+        async def record(response):
+            await original(response)
+            if stage != "github" or not response.is_success:
+                return
+            await response.aread()
+            path, prefix = response.request.url.path, f"/repos/{LIVE_REPOSITORY}"
+            payload = response.json()
+            if path == prefix:
+                self.branch = payload.get("default_branch")
+            elif path.startswith(prefix + "/branches/"):
+                self.tree = payload["commit"]["commit"]["tree"]["sha"]
+            elif path.startswith(prefix + "/git/trees/"):
+                if payload["truncated"]:
+                    raise _BudgetExceeded(
+                        "Automatic paid smoke does not traverse fallback trees"
+                    )
+                self.blobs = {
+                    entry["sha"]
+                    for entry in payload["tree"]
+                    if entry["type"] == "blob"
+                    and 0 <= entry.get("size", -1) <= 512 * 1024
+                }
+            elif path == prefix + "/issues" and payload:
+                self.history_number = payload[0]["number"]
+
+        return record
+
+
+@pytest.mark.skipif(
+    not infrastructure_enabled or os.getenv("RUN_LIVE_AUTO_PREPARATION_SMOKE") != "1",
+    reason="Automatic paid smoke requires explicit live/DB/broker flags",
+)
+async def test_paid_url_only_automatic_preparation_worker_smoke(monkeypatch):
+    """Cold DB knowledge, real public GitHub/embedding/LLM, no supplied UUID.
+
+    Use a disposable test database and stop other dispatchers/workers. Request
+    hooks cap the actual small profile independently of production budgets.
+    Knowledge predating the test is preserved by skipping before submission.
+    """
+    settings = get_settings()
+    for name in (
+        "llm_base_url",
+        "llm_model_name",
+        "embedding_base_url",
+        "embedding_model",
+    ):
+        if not getattr(settings, name):
+            pytest.fail(f"Configure {name.upper()} before enabling the paid smoke")
+    if (
+        settings.llm_api_key is None
+        or not settings.llm_api_key.get_secret_value().strip()
+    ):
+        pytest.fail("Configure LLM_API_KEY before enabling the paid smoke")
+    task_id, budget = str(uuid4()), _AutomaticBudget()
+    async with AsyncExitStack() as stack:
+        engine = create_db_engine(settings.database_url.get_secret_value())
+        stack.push_async_callback(engine.dispose)
+        factory = create_session_factory(engine)
+        async with factory() as session, session.begin():
+            started_at = await session.scalar(select(func.clock_timestamp()))
+            history_exists = await session.scalar(
+                select(RepositoryHistoryRecord.number)
+                .where(RepositoryHistoryRecord.repository == LIVE_REPOSITORY)
+                .limit(1)
+            )
+            index_exists = await session.scalar(
+                select(RepositoryIndex.id)
+                .where(
+                    RepositoryIndex.repository == LIVE_REPOSITORY,
+                    RepositoryIndex.chunker_version == AUTO_SOURCE_CHUNKER_VERSION,
+                )
+                .limit(1)
+            )
+        if history_exists is not None or index_exists is not None:
+            pytest.skip(
+                "Use a cold isolated DB without sampleproject History or automatic indexes; existing knowledge is preserved"
+            )
+
+        async def cleanup():
+            async with factory() as session, session.begin():
+                await session.execute(
+                    delete(InvestigationTask).where(InvestigationTask.id == task_id)
+                )
+                other_task = await session.scalar(
+                    select(InvestigationTask.id)
+                    .where(InvestigationTask.repository == LIVE_REPOSITORY)
+                    .limit(1)
+                )
+                if other_task is None:
+                    await session.execute(
+                        delete(RepositoryHistoryRecord).where(
+                            RepositoryHistoryRecord.repository == LIVE_REPOSITORY,
+                            RepositoryHistoryRecord.fetched_at >= started_at,
+                        )
+                    )
+                    await session.execute(
+                        delete(RepositoryIndex).where(
+                            RepositoryIndex.repository == LIVE_REPOSITORY,
+                            RepositoryIndex.chunker_version
+                            == AUTO_SOURCE_CHUNKER_VERSION,
+                            RepositoryIndex.created_at >= started_at,
+                        )
+                    )
+
+        stack.push_async_callback(cleanup)
+        async with asyncio.timeout(450):
+            async with _broker(settings) as broker:
+                watch = _Watch(factory, task_id, budget=budget)
+                data = await _post_dispatch_read(
+                    monkeypatch,
+                    settings,
+                    factory,
+                    broker,
+                    watch,
+                    LIVE_REPOSITORY,
+                    TARGET_ISSUE,
+                    None,
+                    automatic=True,
+                    budget=budget,
+                )
+            assert (
+                data["prepared_source_index_id"] and data["result"]["source_evidence"]
+            )
+            assert 1 <= data["result"]["search_round"] <= 3
+            assert data["knowledge_budget"]["profile"] == "small"
+            assert (
+                budget.source_requests["tree"] == 1
+                and budget.source_requests["blob"] >= 1
+            )
+            assert all(status == 200 for status in budget.statuses.values())
+            print(
+                {
+                    "repository": LIVE_REPOSITORY,
+                    "issue_number": TARGET_ISSUE,
+                    "prepared_source_index_id": data["prepared_source_index_id"],
+                    "next_step": data["result"]["next_step"],
+                    "search_round": data["result"]["search_round"],
+                    **budget.diagnostics(),
+                }
+            )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.github.com/repos/other/repo/issues/225",
+        "http://api.github.com/repos/pypa/sampleproject/issues/225",
+        "https://api.github.com/repos/pypa/sampleproject/git/blobs/" + "a" * 40,
+        "https://api.github.com/repos/pypa/sampleproject/issues?per_page=100&page=1",
+    ],
+)
+async def test_automatic_paid_scope_guards_are_offline(url):
+    with pytest.raises(_BudgetExceeded):
+        await _AutomaticBudget().github(httpx.Request("GET", url))
+
+
+async def test_automatic_paid_embedding_caps_reject_large_batches_offline():
+    budget = _AutomaticBudget()
+    with pytest.raises(_BudgetExceeded):
+        await budget.embedding(
+            httpx.Request(
+                "POST",
+                "https://embedding.example/embeddings",
+                json={"input": ["x"] * 21},
+            )
+        )
+    budget.embedding_characters = 120_000
+    with pytest.raises(_BudgetExceeded):
+        await budget.embedding(
+            httpx.Request(
+                "POST", "https://embedding.example/embeddings", json={"input": ["x"]}
+            )
+        )
+    assert budget.counts["embedding"] == 0
+
+
+@pytest.mark.parametrize(
+    "usage,expected",
+    [
+        (
+            {
+                "prompt_tokens": 1200,
+                "completion_tokens": 1500,
+                "total_tokens": 2700,
+                "completion_tokens_details": {"reasoning_tokens": 1400},
+            },
+            {
+                "prompt_tokens": 1200,
+                "completion_tokens": 1500,
+                "total_tokens": 2700,
+                "reasoning_tokens": 1400,
+            },
+        ),
+        (
+            {
+                "prompt_tokens": True,
+                "completion_tokens": -1,
+                "total_tokens": "2700",
+                "completion_tokens_details": {"reasoning_tokens": False},
+            },
+            {},
+        ),
+        (None, {}),
+    ],
+)
+async def test_automatic_smoke_completion_diagnostics_are_numeric_and_content_safe(
+    usage, expected
+):
+    budget = _AutomaticBudget()
+    response = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {
+                        "content": "private-analysis",
+                        "reasoning_content": "private-reasoning",
+                    },
+                }
+            ],
+            "usage": usage,
+        },
+    )
+    await budget.response("llm")(response)
+    diagnostics = budget.diagnostics()
+    assert diagnostics["finish_reasons"] == ["length"]
+    assert diagnostics["completion_metrics"] == [
+        {
+            "content_characters": len("private-analysis"),
+            "reasoning_content_characters": len("private-reasoning"),
+            **expected,
+        }
+    ]
+    assert "private-analysis" not in json.dumps(diagnostics)
+    assert "private-reasoning" not in json.dumps(diagnostics)
+
+
+async def test_automatic_smoke_diagnostics_allow_missing_choice_and_usage():
+    budget = _AutomaticBudget()
+    await budget.response("llm")(httpx.Response(200, json={"choices": []}))
+    assert budget.diagnostics()["finish_reasons"] == ["other"]
+    assert budget.diagnostics()["completion_metrics"] == [
+        {"content_characters": 0, "reasoning_content_characters": 0}
+    ]
+
+
+@pytest.mark.parametrize("budget_type", [_Budget, _AutomaticBudget])
+@pytest.mark.parametrize("tokens", [True, False, 0, -1, 4096.0, 4097, "4096", None])
+async def test_source_smoke_rejects_invalid_or_excessive_output_budgets_offline(
+    budget_type, tokens
+):
+    budget = budget_type()
+    request = httpx.Request(
+        "POST", "https://provider.example/chat/completions", json={"max_tokens": tokens}
+    )
+    with pytest.raises(_BudgetExceeded):
+        await budget.llm(request)
+    assert not budget.counts

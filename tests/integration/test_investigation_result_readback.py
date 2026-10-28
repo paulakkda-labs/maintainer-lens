@@ -201,6 +201,8 @@ async def test_http_returns_complete_typed_result(monkeypatch, needs_more, empty
         "result": original,
         "source_index_id": payload["source_index_id"],
         "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
+        "auto_prepare_knowledge": False,
+        "prepared_source_index_id": None,
     }
     assert isinstance(report, str) and "调查报告" in report
     assert payload == original
@@ -481,6 +483,8 @@ async def test_postgres_task_without_artifacts_is_readable(investigation_task):
         "source_index_id": None,
         "report_markdown": None,
         "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
+        "auto_prepare_knowledge": False,
+        "prepared_source_index_id": None,
     }
 
 

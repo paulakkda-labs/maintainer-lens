@@ -13,13 +13,17 @@ from maintainer_lens.clients.github_repository import resolve_repository_revisio
 from maintainer_lens.clients.github_tree import fetch_repository_manifest
 from maintainer_lens.db.models.repository_index import RepositoryIndex
 from maintainer_lens.schemas.chunk import CodeChunk
-from maintainer_lens.schemas.repository import RepositoryRevision
+from maintainer_lens.schemas.investigation_budget import KnowledgePreparationBudget
+from maintainer_lens.schemas.repository import RepositoryManifest, RepositoryRevision
 from maintainer_lens.services.repository_index_lease import (
     RepositoryIndexLeaseLost,
     make_repository_index_identity_key,
     release_repository_index_lease,
     renew_repository_index_lease,
     try_acquire_repository_index_lease,
+)
+from maintainer_lens.services.repository_index_preparation import (
+    prepare_source_index_contents,
 )
 from maintainer_lens.services.repository_index_writer import (
     EmbeddedChunk,
@@ -164,8 +168,14 @@ async def build_repository_index(
     download_concurrency: int = 4,
     lease_seconds: int = 300,
     renewal_interval_seconds: float | None = None,
+    preparation_budget: KnowledgePreparationBudget | None = None,
 ) -> UUID:
     """Build and persist a complete vector index for a GitHub revision."""
+
+    if preparation_budget is not None:
+        preparation_budget = KnowledgePreparationBudget.model_validate(
+            preparation_budget.model_dump()
+        )
 
     if not repository.strip():
         raise ValueError("Repository cannot be empty")
@@ -279,39 +289,36 @@ async def build_repository_index(
                         revision,
                     )
 
-                    sources = await download_repository_sources(
-                        github_http_client,
-                        manifest,
-                        concurrency=download_concurrency,
-                    )
-
-                    chunks: list[CodeChunk] = []
-
-                    for source in sources:
-                        file_chunks = chunk_repository_source(source)
-                        chunks.extend(file_chunks)
-
-                    if not chunks:
-                        raise ValueError(
-                            f"No indexable source chunks found for {repository}"
+                    if preparation_budget is not None:
+                        index_id = await prepare_source_index_contents(
+                            github_http_client,
+                            embedding_provider_client,
+                            session,
+                            revision,
+                            manifest,
+                            budget=preparation_budget,
+                            embedding_provider_name=embedding_provider_name,
+                            embedding_model=embedding_model,
+                            embedding_dimensions=embedding_dimensions,
+                            chunker_version=chunker_version,
+                            embedding_batch_size=embedding_batch_size,
+                            owner_token=owner_token,
                         )
-
-                    embedded_items = await embed_repository_chunks(
-                        embedding_provider_client,
-                        chunks,
-                        batch_size=embedding_batch_size,
-                    )
-
-                    index_id = await write_repository_index(
-                        session,
-                        revision,
-                        embedded_items,
-                        embedding_provider=embedding_provider_name,
-                        embedding_model=embedding_model,
-                        embedding_dimensions=embedding_dimensions,
-                        chunker_version=chunker_version,
-                        owner_token=owner_token,
-                    )
+                    else:
+                        index_id = await _build_in_memory_index(
+                            github_http_client,
+                            embedding_provider_client,
+                            session,
+                            revision,
+                            manifest,
+                            embedding_provider_name=embedding_provider_name,
+                            embedding_model=embedding_model,
+                            embedding_dimensions=embedding_dimensions,
+                            chunker_version=chunker_version,
+                            embedding_batch_size=embedding_batch_size,
+                            download_concurrency=download_concurrency,
+                            owner_token=owner_token,
+                        )
 
                 finally:
                     stop_event.set()
@@ -335,3 +342,42 @@ async def build_repository_index(
 
         except Exception:
             logger.exception("Failed to release repository index build lease")
+
+
+async def _build_in_memory_index(
+    github_http_client: httpx.AsyncClient,
+    embedding_provider_client: EmbeddingProvider,
+    session: AsyncSession,
+    revision: RepositoryRevision,
+    manifest: RepositoryManifest,
+    *,
+    embedding_provider_name: str,
+    embedding_model: str,
+    embedding_dimensions: int,
+    chunker_version: str,
+    embedding_batch_size: int,
+    download_concurrency: int,
+    owner_token: UUID,
+) -> UUID:
+    """Preserve the original bounded builder for existing direct callers."""
+    sources = await download_repository_sources(
+        github_http_client, manifest, concurrency=download_concurrency
+    )
+    chunks: list[CodeChunk] = []
+    for source in sources:
+        chunks.extend(chunk_repository_source(source))
+    if not chunks:
+        raise ValueError(f"No indexable source chunks found for {revision.repository}")
+    embedded_items = await embed_repository_chunks(
+        embedding_provider_client, chunks, batch_size=embedding_batch_size
+    )
+    return await write_repository_index(
+        session,
+        revision,
+        embedded_items,
+        embedding_provider=embedding_provider_name,
+        embedding_model=embedding_model,
+        embedding_dimensions=embedding_dimensions,
+        chunker_version=chunker_version,
+        owner_token=owner_token,
+    )

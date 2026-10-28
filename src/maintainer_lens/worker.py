@@ -47,6 +47,7 @@ from maintainer_lens.messaging.topology import (
     QUEUE_NAME,
     declare_investigation_topology,
 )
+from maintainer_lens.services.investigation_preparation import create_knowledge_preparer
 from maintainer_lens.services.investigation_processor import process_graph_investigation
 from maintainer_lens.services.investigation_source_index import (
     InvestigationSourceIndexNotReadyError,
@@ -55,7 +56,7 @@ from maintainer_lens.services.investigation_source_index import (
 
 logger = logging.getLogger(__name__)
 
-# Backend-owned budgets; knowledge preparation remains a separate operation.
+# Graph budgets remain independent of submission-time preparation budgets.
 WORKER_RESPONSE_LANGUAGE: ResponseLanguage = "zh"
 WORKER_MAX_SEARCH_ROUNDS = 3
 WORKER_GRAPH_TIMEOUT_SECONDS = 120.0
@@ -147,6 +148,14 @@ async def run_worker(
                 httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
             )
             embedding_client = create_embedding_client(embedding_http_client, settings)
+            knowledge_preparer = create_knowledge_preparer(
+                session_factory,
+                http_client,
+                embedding_client,
+                embedding_provider_name=WORKER_EMBEDDING_PROVIDER,
+                embedding_model=settings.embedding_model or "",
+                embedding_dimensions=settings.embedding_dimensions,
+            )
 
             llm_http_client = await stack.enter_async_context(
                 httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0))
@@ -160,6 +169,7 @@ async def run_worker(
                     else ""
                 ),
                 model_name=settings.llm_model_name or "",
+                thinking_enabled=False,
             )
             history_searcher = create_history_searcher(
                 session_factory,
@@ -249,14 +259,18 @@ async def run_worker(
                     source_searcher=(
                         production_source_search
                         if request.source_index_id is not None
+                        or request.auto_prepare_knowledge
                         else None
                     ),
                     source_index_validator=validate_source_index,
                     tool_search_runner=(
                         source_tool_runner
                         if request.source_index_id is not None
+                        or request.auto_prepare_knowledge
                         else history_tool_runner
                     ),
+                    auto_prepare_knowledge=request.auto_prepare_knowledge,
+                    knowledge_preparer=knowledge_preparer,
                 )
 
             investigate = production_investigate

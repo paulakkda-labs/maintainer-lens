@@ -134,7 +134,7 @@ class _RequestBudget:
         tokens = payload.get("max_tokens")
         if (
             type(tokens) is not int
-            or not 1 <= tokens <= 1500
+            or not 1 <= tokens <= 4096
             or len(request.content) > 32_000
         ):
             raise _BudgetExceeded("Live smoke analysis payload/token limit reached")
@@ -545,7 +545,7 @@ async def test_request_guards_enforce_paid_call_caps_without_network():
     with pytest.raises(_BudgetExceeded):
         await budget.embedding(embedding)
     chat = httpx.Request(
-        "POST", "https://chat.example/v1/chat/completions", json={"max_tokens": 1500}
+        "POST", "https://chat.example/v1/chat/completions", json={"max_tokens": 4096}
     )
     for _ in range(7):
         await budget.llm(chat)
@@ -588,7 +588,7 @@ async def test_embedding_guard_rejects_extra_or_oversized_inputs(payload):
     assert budget.counts == Counter()
 
 
-@pytest.mark.parametrize("tokens", [True, 1501, 0])
+@pytest.mark.parametrize("tokens", [True, 4097, 0])
 async def test_chat_guard_rejects_invalid_token_limits(tokens):
     budget = _RequestBudget()
     request = httpx.Request(

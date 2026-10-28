@@ -433,6 +433,8 @@ async def test_get_maps_report_provenance_failure_to_safe_integrity_error(
         issue_number=123,
         source_index_id=None,
         knowledge_budget=make_knowledge_preparation_budget().model_dump(),
+        auto_prepare_knowledge=False,
+        prepared_source_index_id=None,
         status="succeeded",
     )
     monkeypatch.setattr(

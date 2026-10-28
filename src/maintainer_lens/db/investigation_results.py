@@ -9,6 +9,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintainer_lens.agents.investigation.state import InvalidInvestigationResultError
+from maintainer_lens.db.investigation_preparation import (
+    effective_source_index_expression,
+)
 from maintainer_lens.db.models.investigation import InvestigationTask
 from maintainer_lens.db.models.investigation_result import (
     INVESTIGATION_RESULT_SCHEMA_VERSION,
@@ -104,7 +107,7 @@ async def upsert_investigation_result(
             select(
                 InvestigationTask.repository,
                 InvestigationTask.issue_number,
-                InvestigationTask.source_index_id,
+                effective_source_index_expression(),
             )
             .where(InvestigationTask.id == task_id)
             .with_for_update()
@@ -121,6 +124,10 @@ async def upsert_investigation_result(
             InvestigationTask.status == "running",
             InvestigationTask.claim_token == claim_token,
             InvestigationTask.lease_expires_at > func.clock_timestamp(),
+            (
+                InvestigationTask.auto_prepare_knowledge.is_(False)
+                | InvestigationTask.prepared_source_index_id.is_not(None)
+            ),
         )
     )
     if owned_task_id is None:

@@ -1,10 +1,12 @@
 """Persist complete repository vector indexes atomically."""
 
+import asyncio
 import hashlib
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from itertools import batched
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
@@ -98,7 +100,7 @@ def _prepare_items(
 async def write_repository_index(
     session: AsyncSession,
     revision: RepositoryRevision,
-    items: Sequence[EmbeddedChunk],
+    items: Sequence[EmbeddedChunk] | Callable[[], Iterator[EmbeddedChunk]],
     *,
     embedding_provider: str,
     embedding_model: str,
@@ -106,7 +108,12 @@ async def write_repository_index(
     chunker_version: str,
     owner_token: UUID | None = None,
 ) -> UUID:
-    """Atomically store a repository index with optional lease fencing."""
+    """Atomically store a repository index with optional lease fencing.
+
+    A callable supplies a stable, replayable local spool. Validation precedes
+    SQL; persistence replays bounded batches without retaining all vectors.
+    The callable must never perform network I/O or mutate between replays.
+    """
 
     if any(
         not value.strip()
@@ -118,8 +125,30 @@ async def write_repository_index(
     ):
         raise ValueError("Index configuration fields cannot be empty")
 
-    prepared = _prepare_items(items, embedding_dimensions)
-    expected_keys = {key for _, key in prepared}
+    if callable(items):
+
+        def replay():
+            seen: set[str] = set()
+            for item in items():
+                pair = _prepare_items([item], embedding_dimensions)[0]
+                if pair[1] in seen:
+                    raise ValueError("Duplicate chunk key in input")
+                seen.add(pair[1])
+                yield pair
+            if not seen:
+                raise ValueError("Repository index requires at least one chunk")
+
+        expected_keys: set[str] = set()
+        for batch in batched(replay(), 50):
+            expected_keys.update(key for _, key in batch)
+            # Let deadlines, cancellation and independent lease renewal run.
+            await asyncio.sleep(0)
+    else:
+        prepared = _prepare_items(items, embedding_dimensions)
+        expected_keys = {key for _, key in prepared}
+
+        def replay():
+            yield from prepared
 
     async with session.begin():
         if owner_token is not None:
@@ -189,28 +218,41 @@ async def write_repository_index(
 
             return existing.id
 
-        records = [
-            RepositoryChunk(
-                index_id=index_id,
-                chunk_key=key,
-                file_path=item.chunk.file.path,
-                blob_sha=item.chunk.file.blob_sha,
-                language=item.chunk.language,
-                kind=item.chunk.kind,
-                symbol=item.chunk.symbol,
-                symbols=item.chunk.symbols,
-                heading_path=item.chunk.heading_path,
-                headings=item.chunk.headings,
-                start_line=item.chunk.start_line,
-                end_line=item.chunk.end_line,
-                content=item.chunk.content,
-                embedding=item.vector,
-            )
-            for item, key in prepared
-        ]
+        written_keys: set[str] = set()
+        for batch in batched(replay(), 50):
+            records = [
+                RepositoryChunk(
+                    index_id=index_id,
+                    chunk_key=key,
+                    file_path=item.chunk.file.path,
+                    blob_sha=item.chunk.file.blob_sha,
+                    language=item.chunk.language,
+                    kind=item.chunk.kind,
+                    symbol=item.chunk.symbol,
+                    symbols=item.chunk.symbols,
+                    heading_path=item.chunk.heading_path,
+                    headings=item.chunk.headings,
+                    start_line=item.chunk.start_line,
+                    end_line=item.chunk.end_line,
+                    content=item.chunk.content,
+                    embedding=item.vector,
+                )
+                for item, key in batch
+            ]
 
-        session.add_all(records)
-        await session.flush()
+            session.add_all(records)
+            await session.flush()
+            written_keys.update(key for _, key in batch)
+            # The Session holds weak references after flush; release this batch.
+            del records
+
+        if written_keys != expected_keys:
+            raise ValueError("Repository index spool changed during persistence")
+
+        if owner_token is not None:
+            await assert_repository_index_lease_owned(
+                session, identity_key=identity_key, owner_token=owner_token
+            )
 
         await session.execute(
             update(RepositoryIndex)

@@ -25,6 +25,7 @@ async def create_investigation_submission(
     issue_number: int,
     source_index_id: UUID | None = None,
     knowledge_budget_profile: KnowledgeBudgetProfile = "standard",
+    auto_prepare_knowledge: bool = False,
 ) -> InvestigationRequestedMessage:
     """Atomically create an investigation task and its outbox event."""
 
@@ -34,6 +35,7 @@ async def create_investigation_submission(
         repository=repository,
         issue_number=issue_number,
         source_index_id=source_index_id,
+        auto_prepare_knowledge=auto_prepare_knowledge,
     )
 
     task = InvestigationTask(
@@ -41,6 +43,7 @@ async def create_investigation_submission(
         repository=message.repository,
         issue_number=message.issue_number,
         source_index_id=message.source_index_id,
+        auto_prepare_knowledge=message.auto_prepare_knowledge,
         knowledge_budget=budget.model_dump(mode="json"),
         status="pending",
     )

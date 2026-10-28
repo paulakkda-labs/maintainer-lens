@@ -13,6 +13,10 @@ from maintainer_lens.agents.investigation_analysis import (
     InvestigationAnalyzer,
     ResponseLanguage,
 )
+from maintainer_lens.db.investigation_preparation import (
+    bind_prepared_source_index,
+    get_claimed_knowledge_preparation,
+)
 from maintainer_lens.db.investigation_results import upsert_investigation_result
 from maintainer_lens.db.investigation_tasks import get_claimed_investigation_identity
 from maintainer_lens.investigation_runner import (
@@ -24,6 +28,7 @@ from maintainer_lens.schemas.investigation_contracts import (
     InvestigationInput,
 )
 from maintainer_lens.services.investigation_execution import execute_graph_investigation
+from maintainer_lens.services.investigation_preparation import KnowledgePreparer
 from maintainer_lens.services.issue_investigator import investigate_issue
 
 
@@ -45,10 +50,13 @@ async def process_graph_investigation(
     max_search_rounds: int = 1,
     query_planner: FollowUpQueryPlanner | None = None,
     tool_search_runner: ToolSearchRunner | None = None,
+    auto_prepare_knowledge: bool = False,
+    knowledge_preparer: KnowledgePreparer | None = None,
 ) -> None:
     """Process an existing claim, returning only after its result commits.
 
-    The caller owns clients, knowledge preparation and the claim/lease lifecycle.
+    The caller owns clients and the claim/lease lifecycle. Automatic mode uses
+    its stored budget and binds the prepared identity before Graph execution.
     Graph options are validated by the application entry after snapshot commit;
     its deadline does not cover snapshot acquisition or database commits.
     """
@@ -60,11 +68,26 @@ async def process_graph_investigation(
         },
         strict=True,
     )
+    if type(auto_prepare_knowledge) is not bool:
+        raise ValueError("Automatic preparation flag must be a boolean")
+    if auto_prepare_knowledge and (
+        source_index_id is not None
+        or source_searcher is None
+        or source_index_validator is None
+        or knowledge_preparer is None
+    ):
+        raise ValueError(
+            "Automatic preparation requires Source dependencies and no requested index"
+        )
 
+    preparation = None
     async with session_factory() as session:
         async with session.begin():
+            mode_options = (
+                {"auto_prepare_knowledge": True} if auto_prepare_knowledge else {}
+            )
             identity = await get_claimed_investigation_identity(
-                session, task_id=task_id, claim_token=claim_token
+                session, task_id=task_id, claim_token=claim_token, **mode_options
             )
             if identity is None:
                 raise LeaseLostError(
@@ -78,14 +101,28 @@ async def process_graph_investigation(
                 raise PermanentInvestigationError(
                     "Investigation request does not match its task identity"
                 )
+            if auto_prepare_knowledge:
+                preparation = await get_claimed_knowledge_preparation(
+                    session, task_id=task_id, claim_token=claim_token
+                )
+                if preparation is None:
+                    raise LeaseLostError(
+                        "Automatic preparation claim is no longer active"
+                    )
+                if (preparation.repository, preparation.issue_number) != identity[:2]:
+                    raise PermanentInvestigationError(
+                        "Preparation identity changed during preflight"
+                    )
 
     task_repository, task_issue_number, task_source_index_id = identity
+    if preparation is not None:
+        task_source_index_id = preparation.prepared_source_index_id
     if task_source_index_id is not None:
         if source_searcher is None:
             raise ValueError("Requested Source index requires a source_searcher")
         if source_index_validator is not None:
             await source_index_validator(task_repository, task_source_index_id)
-    elif source_searcher is not None:
+    elif source_searcher is not None and not auto_prepare_knowledge:
         raise ValueError("Source search requires a task source_index_id")
     snapshot = await investigate_issue(
         http_client=http_client,
@@ -95,6 +132,24 @@ async def process_graph_investigation(
         repository=task_repository,
         issue_number=task_issue_number,
     )
+    if preparation is not None and task_source_index_id is None:
+        task_source_index_id = await knowledge_preparer(
+            task_repository, preparation.budget
+        )
+        await source_index_validator(task_repository, task_source_index_id)
+        async with session_factory() as session, session.begin():
+            bound = await bind_prepared_source_index(
+                session,
+                task_id=task_id,
+                claim_token=claim_token,
+                repository=task_repository,
+                issue_number=task_issue_number,
+                source_index_id=task_source_index_id,
+            )
+            if not bound:
+                raise LeaseLostError(
+                    "Investigation claim was lost before index binding"
+                )
     request = InvestigationInput(
         repository=task_repository,
         issue_number=task_issue_number,
