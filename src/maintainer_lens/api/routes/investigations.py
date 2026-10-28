@@ -10,7 +10,11 @@ from maintainer_lens.api.dependencies import (
     get_session_factory,
 )
 from maintainer_lens.db.investigation_queries import (
-    get_investigation_with_snapshot,
+    get_investigation_details,
+)
+from maintainer_lens.db.investigation_results import (
+    StoredInvestigationResultError,
+    decode_investigation_result,
 )
 from maintainer_lens.schemas.investigation_api import (
     CreateInvestigationRequest,
@@ -59,9 +63,9 @@ async def get_investigation(
     task_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> InvestigationDetailResponse:
-    """Return the investigation status and available issue snapshot."""
+    """Return artifacts, exposing a Graph result only after task success."""
 
-    result = await get_investigation_with_snapshot(
+    result = await get_investigation_details(
         session,
         task_id,
     )
@@ -72,7 +76,22 @@ async def get_investigation(
             detail="Investigation not found",
         )
 
-    task, snapshot = result
+    task, snapshot, stored_result = result
+
+    graph_result = None
+    if task.status == "succeeded" and stored_result is not None:
+        try:
+            graph_result = decode_investigation_result(
+                stored_result,
+                task_id=task.id,
+                repository=task.repository,
+                issue_number=task.issue_number,
+            )
+        except StoredInvestigationResultError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Stored investigation result is unavailable",
+            ) from exc
 
     issue = (
         IssueSnapshotResponse.model_validate(
@@ -89,4 +108,5 @@ async def get_investigation(
         issue_number=task.issue_number,
         status=task.status,
         issue=issue,
+        result=graph_result,
     )

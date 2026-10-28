@@ -5,6 +5,7 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from maintainer_lens.agents.investigation_analysis import (
+    AnalysisEvidence,
     AnalysisResultState,
     ResponseLanguage,
 )
@@ -14,6 +15,10 @@ from maintainer_lens.services.repository_history_semantic_search import (
 from maintainer_lens.services.repository_hybrid_search import (
     HybridSearchResult,
 )
+
+
+class InvalidInvestigationResultError(ValueError):
+    """The graph produced invalid analysis, citations, or terminal state."""
 
 
 class HistoryEvidence(TypedDict):
@@ -82,6 +87,8 @@ class InvestigationState(TypedDict):
     history_evidence: NotRequired[list[HistoryEvidence]]
     source_evidence: NotRequired[list[SourceEvidence]]
     preliminary_analysis: NotRequired[AnalysisResultState]
+    # Retain the last completed analysis input when follow-up analysis is skipped.
+    analysis_evidence: NotRequired[list[AnalysisEvidence]]
 
     search_round: NotRequired[int]
     searched_queries: NotRequired[list[str]]

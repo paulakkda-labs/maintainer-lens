@@ -94,11 +94,11 @@ async def test_get_pending_investigation_without_snapshot(
         status="pending",
     )
 
-    query = AsyncMock(return_value=(task, None))
+    query = AsyncMock(return_value=(task, None, None))
 
     monkeypatch.setattr(
         investigation_routes,
-        "get_investigation_with_snapshot",
+        "get_investigation_details",
         query,
     )
 
@@ -115,6 +115,7 @@ async def test_get_pending_investigation_without_snapshot(
         "issue_number": 3712,
         "status": "pending",
         "issue": None,
+        "result": None,
     }
 
     query.assert_awaited_once_with(session, "task-001")
@@ -153,8 +154,8 @@ async def test_get_completed_investigation_with_snapshot(
 
     monkeypatch.setattr(
         investigation_routes,
-        "get_investigation_with_snapshot",
-        AsyncMock(return_value=(task, snapshot)),
+        "get_investigation_details",
+        AsyncMock(return_value=(task, snapshot, None)),
     )
 
     async with httpx.AsyncClient(
@@ -168,6 +169,7 @@ async def test_get_completed_investigation_with_snapshot(
     data = response.json()
 
     assert data["status"] == "succeeded"
+    assert data["result"] is None
     assert data["issue"]["title"] == "Example issue"
     assert data["issue"]["source_url"] == snapshot.source_url
     assert data["issue"]["fetched_at"] == "2026-10-20T00:00:00Z"
@@ -189,7 +191,7 @@ async def test_get_unknown_investigation_returns_404(
 
     monkeypatch.setattr(
         investigation_routes,
-        "get_investigation_with_snapshot",
+        "get_investigation_details",
         AsyncMock(return_value=None),
     )
 

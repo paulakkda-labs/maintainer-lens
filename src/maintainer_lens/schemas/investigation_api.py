@@ -1,10 +1,14 @@
 """Request and response schemas for investigation APIs."""
 
-import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, HttpUrl
+
+from maintainer_lens.schemas.investigation_contracts import (
+    CreateInvestigationRequest as CreateInvestigationRequest,
+)
+from maintainer_lens.schemas.investigation_contracts import InvestigationResult
 
 InvestigationStatus = Literal[
     "pending",
@@ -12,28 +16,6 @@ InvestigationStatus = Literal[
     "succeeded",
     "failed",
 ]
-
-
-class CreateInvestigationRequest(BaseModel):
-    """Request to investigate a public GitHub issue."""
-
-    repository: str
-    issue_number: int = Field(gt=0)
-
-    @field_validator("repository")
-    @classmethod
-    def validate_repository(cls, value: str) -> str:
-        """Validate an owner/repository identifier."""
-
-        parts = value.split("/")
-
-        if len(parts) != 2 or any(
-            part in (".", "..") or re.fullmatch(r"[A-Za-z0-9_.-]+", part) is None
-            for part in parts
-        ):
-            raise ValueError("Repository must use the format owner/repository")
-
-        return value
 
 
 class CreateInvestigationResponse(BaseModel):
@@ -56,10 +38,11 @@ class IssueSnapshotResponse(BaseModel):
 
 
 class InvestigationDetailResponse(BaseModel):
-    """Current investigation status and available issue snapshot."""
+    """Task status, available snapshot and optional completed Graph result."""
 
     task_id: str
     repository: str
     issue_number: int
     status: InvestigationStatus
     issue: IssueSnapshotResponse | None
+    result: InvestigationResult | None = None

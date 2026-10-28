@@ -88,8 +88,8 @@ async def investigate_issue(
     claim_token: str,
     repository: str,
     issue_number: int,
-) -> None:
-    """Fetch a GitHub issue and persist its snapshot safely."""
+) -> IssueSnapshotData:
+    """Fetch an issue and return its data only after the fenced snapshot commits."""
 
     try:
         issue = await fetch_github_issue(
@@ -146,3 +146,5 @@ async def investigate_issue(
                 raise LeaseLostError(
                     f"Investigation task {task_id} no longer owns a valid lease"
                 )
+
+    return snapshot
