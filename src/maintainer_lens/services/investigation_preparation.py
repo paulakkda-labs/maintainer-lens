@@ -35,6 +35,7 @@ def create_knowledge_preparer(
     embedding_provider_name: str,
     embedding_model: str,
     embedding_dimensions: int,
+    on_stage: Callable[[str], Awaitable[None]] | None = None,
 ) -> KnowledgePreparer:
     """Bind existing Worker resources; returned calls open only scoped Sessions."""
     if not embedding_provider_name.strip() or not embedding_model.strip():
@@ -48,6 +49,8 @@ def create_knowledge_preparer(
         timeout_scope = asyncio.timeout(budget.preparation_timeout_seconds)
         try:
             async with timeout_scope:
+                if on_stage is not None:
+                    await on_stage("preparing_source")
                 async with session_factory() as session:
                     index_id = await build_repository_index(
                         github_client,
@@ -65,6 +68,8 @@ def create_knowledge_preparer(
                     raise KnowledgePreparationDeadlineExceeded(
                         "Knowledge preparation deadline exceeded"
                     )
+                if on_stage is not None:
+                    await on_stage("preparing_history")
                 await prepare_repository_history_pages(
                     session_factory,
                     github_client,

@@ -20,6 +20,7 @@ class ClaimedOutboxEvent:
     event_type: str
     payload: dict[str, Any]
     delivery_token: str
+    generation: int = 0
 
 
 async def claim_next_outbox_event(
@@ -66,6 +67,7 @@ async def claim_next_outbox_event(
         event_type=event.event_type,
         payload=dict(event.payload),
         delivery_token=token,
+        generation=event.generation,
     )
 
 

@@ -36,6 +36,8 @@ localhost-bound development setup, not a hardened public deployment.
 | Snapshot and Graph processor | [Issue service](../src/maintainer_lens/services/issue_investigator.py), [processor](../src/maintainer_lens/services/investigation_processor.py) | Commit snapshot data; optionally compose Graph execution and result commit under an existing claim |
 | Graph | [application entry](../src/maintainer_lens/services/investigation_execution.py), [composer](../src/maintainer_lens/agents/investigation_graph.py), [node modules](../src/maintainer_lens/agents/investigation/) | Validated fresh input, retrieval/analysis/controlled follow-up and shared final validation |
 | Durable Graph execution | [execution contract](../src/maintainer_lens/schemas/investigation_checkpoint.py), [resume service](../src/maintainer_lens/services/investigation_checkpoint_execution.py), [Saver](../src/maintainer_lens/agents/investigation/checkpointing.py), [SQL store](../src/maintainer_lens/db/investigation_checkpoints.py), [models](../src/maintainer_lens/db/models/investigation_checkpoint.py) | Frozen input/configuration, task-scoped checkpoints/pending writes and claim-fenced recovery |
+| URL reuse and freshness | [resolver](../src/maintainer_lens/services/investigation_url_reuse.py), [arbitration](../src/maintainer_lens/db/investigation_reuse.py), [metadata observation](../src/maintainer_lens/services/investigation_freshness.py), [shared execution profile](../src/maintainer_lens/services/investigation_configuration.py) | Resolve active/cached/recoverable/changed URL intent without mixing versions |
+| Progress and errors | [reporter](../src/maintainer_lens/services/investigation_progress.py), [event store](../src/maintainer_lens/db/investigation_progress.py), [event models](../src/maintainer_lens/db/models/investigation_reuse.py) | Claim-fenced phases, safe processing errors, delivery generation and paginated API history |
 | Source knowledge | [indexing](../src/maintainer_lens/services/repository_indexing.py), [search](../src/maintainer_lens/services/repository_search.py) | Commit-pinned indexes, build leases, exact semantic/optional keyword retrieval |
 | Investigation Source selection | [selection boundary](../src/maintainer_lens/services/investigation_source_index.py), [adapter](../src/maintainer_lens/agents/investigation/retrieval.py) | Validate an explicit or backend-selected UUID against repository, ready status and full embedding identity; return immutable metadata, without building or choosing latest |
 | History knowledge | [preparation](../src/maintainer_lens/services/repository_history_pipeline.py), [sync](../src/maintainer_lens/services/repository_history_sync.py), [semantic retrieval](../src/maintainer_lens/services/repository_history_semantic_search.py) | Bounded collection/enrichment/indexing and repository-scoped evidence retrieval |
@@ -258,7 +260,7 @@ calling retrieval services that own their own transaction scopes.
 
 | Operation | Transaction boundary |
 | --- | --- |
-| Submission | Task + Outbox commit together |
+| Submission | Low-level Task + Outbox commit together; URL lookup arbitration and a new generation/event commit atomically |
 | Outbox dispatch | Claim commit → network publish → guarded finalization commit |
 | Runner | Claim, heartbeat and terminal updates use independent short transactions |
 | Snapshot | Caller-owned short fenced write transaction |
@@ -366,7 +368,7 @@ index/data, caps requests at GitHub/embedding/LLM 8/6/7 and parks retries. This
 partial test index is excluded from automatic reuse by its unique chunker version. GET runs through an in-process ASGI
 app, not a separately deployed HTTP server. Supplying tests is not evidence they
 passed. M4 is merged in PR #14; broad semantic quality remains a release acceptance concern.
-Checkpoint recovery is implemented in the M5 slice below, with acceptance pending.
+Checkpoint recovery is merged in PR #15 with maintainer-confirmed acceptance, as described below.
 HITL, cross-run memory, monetary budgets and private access remain future work;
 none replace the task lifecycle.
 
@@ -558,10 +560,93 @@ cover persistence, lock waits, ownership, cancellation, reclaim and the
 result/status commit gap. The existing
 [Worker E2E suite](../tests/integration/test_worker_graph_source_e2e.py) additionally
 cancels analysis and restarts the default Worker through real MQ redelivery.
-These M5 tests are supplied but not yet run; see the README acceptance commands.
+The maintainer confirmed the checkpoint acceptance suites passed; Git contains PR #15.
+The maintainer reports URL reuse/progress local tests passed and application services started; its PR review, CI and merge remain pending. The assistant did not execute the acceptance suites.
 
 Human review remains future work and will be on demand. Normal reports do not
 require approval. Adjustable budget exhaustion may later preserve trusted
 progress for a human decision; it cannot authorize invalid JSON, citations,
 repository/index/claim boundaries or provider hard limits. No review endpoints,
 waiting states or trusted long-term memory are introduced by checkpoint storage.
+
+
+## Repeated URL resolution, freshness and progress
+
+The automatic `/investigations/from-url` entry resolves existing intent instead
+of always creating a Task. The low-level `/investigations` entry retains its
+create-new contract. URL identity is case-insensitive repository + Issue + the
+resolved preparation-budget snapshot. No caller can inject Task IDs, generations,
+checkpoint State or a backend-selected Source UUID through this URL contract.
+
+`investigation_url_lookups` holds the current Task and a separate successful-report
+anchor. Insert-on-conflict and a row lock arbitrate concurrent first submissions,
+checks and recoveries. Compatible existing automatic tasks can be adopted when
+the lookup table is first introduced. A pending/running Task is returned without
+a duplicate dispatch. A failed compatible Task can be recovered only when its
+recorded failure is retryable, at most three user recoveries per Task. Legacy
+failures without a recorded retryable classification are not silently restarted.
+
+A terminal candidate acquires a 30-second lookup check token/lease in a short
+transaction. GitHub HTTP runs outside SQL, within a 15-second metadata deadline;
+concurrent requests share the existing check and can receive the historical
+report with `checking`. A second short transaction checks token, expiry, current
+Task and generation before applying the observation. Expired/replaced observations
+cannot create work or overwrite a newer decision. External cancellation releases
+the token where possible; lease expiry is the fallback if SQL is unavailable.
+This is a metadata-check deadline, not a total HTTP-request latency guarantee.
+
+The explicit freshness scope is Issue title/body/state/updated_at, default-branch
+commit and recorded execution configuration. Frozen inputs/configuration remain
+unchanged. Changes create a new Task and retain the prior report; checks which
+cannot complete expose `unknown` and a safe reason, never `current`. This scope
+does not promise detection of every linked/unlinked PR or discussion update.
+GitHub open/closed status takes display priority and is included in Markdown;
+closure alone is not described as independently verified code repair.
+
+A successful unchanged report is returned directly. Historical and unverified
+reports identify their owning Task and include the freshness warning in Markdown,
+not only in JSON. The successful-report anchor remains usable while a later Task
+is running or failed. GET exposes its artifact separately from the current Task's
+`result`/`report_markdown`; an unfinished Task never gains a successful current
+result merely because a historical report exists. There is no LLM call during
+freshness inspection. HTTP clients are scoped through the existing GitHub factory
+inside the probe; no new API lifespan resource or dependency is required.
+
+`execution_generation=0` is the original delivery cycle; a user recovery atomically
+changes failed → pending, increments the generation, writes a queued event and
+creates its Outbox event. Outbox uniqueness is `(task_id, event_type, generation)`.
+Nonzero generations travel in MQ bodies and survive retry republishing. Legacy
+bodies default to zero and keep their original serialization. Claim SQL checks
+the expected generation. A stale delivery cannot claim a newer generation and
+is acknowledged without processing; a future generation is rejected. Checkpoint
+threads still use the stable Task ID, and existing per-cycle MQ retry limits and
+per-claim Graph deadlines remain unchanged.
+
+`investigation_task_events` records queued/started/node/preparation/finalizing and
+completion/retry/failure events. Each processing event uses the active claim,
+short Task lock, fresh DB clock and independent Session. Lifecycle events commit
+with the Runner's status transition. No provider request spans these transactions.
+Node observation changes no Graph state or edges. The original Runner remains
+the only Task lifecycle owner. A model output limit is a safe typed ValueError
+subclass for error reporting; it still fails validation under the existing policy.
+Raw exception strings, HTTP bodies, keys and model content are not API error text.
+
+GET details preserves the original one-statement Task/Snapshot/Result read.
+Additional progress reads are restricted to that observed generation/status so
+a later recovery does not attach a future generation's phase to an old Task
+snapshot. `last_error` may be historical even after success. Events have a bounded
+`after`/`limit` endpoint; callers retain the last returned ID when polling. A killed
+process may leave only its last committed phase until lease/redelivery recovery;
+no reason is fabricated for an event which could not be persisted.
+
+Migration `0ab5e7f9c306` extends `f9a4d6e8b205`, adds two registered ORM models,
+Task generation/recoverability/freshness fields and Outbox generation. Stop old
+processes, manually migrate, and restart matching API/Dispatcher/Worker code;
+older Workers do not understand nonzero-generation messages. Downgrade refuses
+when recovery generations exist rather than discard their delivery semantics.
+No review states, notification transport, product frontend or memory is added.
+
+Acceptance uses offline resolution/Graph/API/error contracts, real PostgreSQL
+concurrency/expiry/rollback/generation tests and actual API→Outbox→MQ→default
+Worker recovery with simulated HTTP. These new tests are not yet run. See
+[README commands](../README.md#url-reuse-and-progress-acceptance).

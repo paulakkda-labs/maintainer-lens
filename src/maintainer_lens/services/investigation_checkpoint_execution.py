@@ -8,6 +8,7 @@ from langgraph.checkpoint.base import CheckpointTuple
 from maintainer_lens.agents.investigation.checkpointing import (
     InvestigationCheckpointSaver,
 )
+from maintainer_lens.agents.investigation.progress import NodeObserver
 from maintainer_lens.agents.investigation.query_planning import FollowUpQueryPlanner
 from maintainer_lens.agents.investigation.state import HistorySearcher, SourceSearcher
 from maintainer_lens.agents.investigation.tool_node import ToolSearchRunner
@@ -121,6 +122,7 @@ async def execute_checkpointed_investigation(
     source_searcher: SourceSearcher | None = None,
     query_planner: FollowUpQueryPlanner | None = None,
     tool_search_runner: ToolSearchRunner | None = None,
+    node_observer: NodeObserver | None = None,
 ) -> InvestigationResult:
     """Run one active segment; restored rounds are never reset to fresh input.
 
@@ -158,6 +160,7 @@ async def execute_checkpointed_investigation(
         query_planner=query_planner,
         tool_search_runner=tool_search_runner,
         checkpointer=saver,
+        node_observer=node_observer,
     )
     config = {"configurable": {"thread_id": run.task_id}}
     timeout_scope = asyncio.timeout(execution.timeout_seconds)

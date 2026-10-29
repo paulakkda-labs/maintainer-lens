@@ -29,8 +29,11 @@ async def create_investigation_task(
 async def claim_investigation_task(
     session: AsyncSession,
     task_id: str,
+    expected_generation: int = 0,
 ) -> str | None:
     """Atomically claim a pending or expired investigation task."""
+    if type(expected_generation) is not int or expected_generation < 0:
+        raise ValueError("Invalid execution generation")
     claim_token = uuid4().hex
 
     expired_running = and_(
@@ -46,6 +49,7 @@ async def claim_investigation_task(
         update(InvestigationTask)
         .where(
             InvestigationTask.id == task_id,
+            InvestigationTask.execution_generation == expected_generation,
             claimable,
         )
         .values(
@@ -58,6 +62,17 @@ async def claim_investigation_task(
     result = await session.execute(stmt)
     claim_token = result.scalar_one_or_none()
     return claim_token
+
+
+async def get_investigation_task_generation(
+    session: AsyncSession,
+    task_id: str,
+) -> int | None:
+    return await session.scalar(
+        select(InvestigationTask.execution_generation).where(
+            InvestigationTask.id == task_id
+        )
+    )
 
 
 async def get_claimed_investigation_identity(

@@ -4,6 +4,10 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from maintainer_lens.db.investigation_progress import TaskEventRecorder
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -159,15 +163,32 @@ async def execute_investigation_task(
     task_id: str,
     processor: Callable[[str], Awaitable[None]],
     final_attempt: bool = False,
+    expected_generation: int = 0,
+    event_recorder: "TaskEventRecorder | None" = None,
 ) -> None:
     """Claim, execute, and complete an investigation task."""
+    if type(expected_generation) is not int or expected_generation < 0:
+        raise ValueError("Invalid execution generation")
 
     async with session_factory() as session:
         async with session.begin():
             claim_token = await claim_investigation_task(
                 session=session,
                 task_id=task_id,
+                **(
+                    {"expected_generation": expected_generation}
+                    if expected_generation
+                    else {}
+                ),
             )
+            if claim_token is not None and event_recorder is not None:
+                await event_recorder(
+                    session,
+                    task_id=task_id,
+                    claim_token=claim_token,
+                    kind="started",
+                    phase="starting",
+                )
     if claim_token is None:
         raise InvestigationClaimUnavailableError(
             "Investigation task cannot be claimed."
@@ -176,9 +197,10 @@ async def execute_investigation_task(
     processing_error: (
         RetryableInvestigationError | PermanentInvestigationError | None
     ) = None
+    error_info = None
 
     async def guarded_processor() -> None:
-        nonlocal processing_error
+        nonlocal processing_error, error_info
 
         try:
             await processor(claim_token)
@@ -186,6 +208,19 @@ async def execute_investigation_task(
             raise
         except Exception as exc:
             processing_error = _classify_processing_error(exc)
+            if event_recorder is not None:
+                from maintainer_lens.services.investigation_progress import (
+                    describe_failure,
+                )
+
+                error_info = describe_failure(
+                    exc,
+                    retryable=isinstance(processing_error, RetryableInvestigationError),
+                )
+                if getattr(processing_error, "not_before", None) is not None:
+                    error_info = error_info.model_copy(
+                        update={"not_before": processing_error.not_before}
+                    )
 
     await run_investigation_with_lease(
         session_factory=session_factory,
@@ -197,6 +232,17 @@ async def execute_investigation_task(
     if processing_error is not None:
         async with session_factory() as session:
             async with session.begin():
+                if event_recorder is not None:
+                    await event_recorder(
+                        session,
+                        task_id=task_id,
+                        claim_token=claim_token,
+                        kind="failed"
+                        if final_attempt
+                        or isinstance(processing_error, PermanentInvestigationError)
+                        else "retry_scheduled",
+                        error=error_info,
+                    )
                 if final_attempt or isinstance(
                     processing_error,
                     PermanentInvestigationError,
@@ -213,21 +259,29 @@ async def execute_investigation_task(
                         claim_token=claim_token,
                     )
 
-        if not changed:
-            raise LeaseLostError(
-                f"Cannot update investigation with an invalid lease: {task_id}"
-            )
+                if not changed:
+                    raise LeaseLostError(
+                        f"Cannot update investigation with an invalid lease: {task_id}"
+                    )
         raise processing_error
 
     async with session_factory() as session:
         async with session.begin():
+            if event_recorder is not None:
+                await event_recorder(
+                    session,
+                    task_id=task_id,
+                    claim_token=claim_token,
+                    kind="completed",
+                    phase="completed",
+                )
             completed = await mark_investigation_succeeded(
                 session=session,
                 task_id=task_id,
                 claim_token=claim_token,
             )
-    if not completed:
-        raise LeaseLostError(
-            f"Cannot complete investigation with an invalid lease: {task_id}"
-        )
+            if not completed:
+                raise LeaseLostError(
+                    f"Cannot complete investigation with an invalid lease: {task_id}"
+                )
     logger.info("Investigation task succeeded: task_id=%s", task_id)

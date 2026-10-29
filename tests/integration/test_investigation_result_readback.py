@@ -34,6 +34,7 @@ from maintainer_lens.db.models.investigation_result import InvestigationResultRe
 from maintainer_lens.schemas.investigation_budget import (
     make_knowledge_preparation_budget,
 )
+from maintainer_lens.schemas.investigation_reuse import InvestigationFreshness
 
 pytestmark = pytest.mark.anyio
 requires_postgres = pytest.mark.skipif(
@@ -203,6 +204,12 @@ async def test_http_returns_complete_typed_result(monkeypatch, needs_more, empty
         "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
         "auto_prepare_knowledge": False,
         "prepared_source_index_id": None,
+        "generation": 0,
+        "progress": None,
+        "last_error": None,
+        "freshness": InvestigationFreshness().model_dump(mode="json"),
+        "previous_report_task_id": None,
+        "previous_report_markdown": None,
     }
     assert isinstance(report, str) and "调查报告" in report
     assert payload == original
@@ -485,6 +492,12 @@ async def test_postgres_task_without_artifacts_is_readable(investigation_task):
         "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
         "auto_prepare_knowledge": False,
         "prepared_source_index_id": None,
+        "generation": 0,
+        "progress": None,
+        "last_error": None,
+        "freshness": InvestigationFreshness().model_dump(mode="json"),
+        "previous_report_task_id": None,
+        "previous_report_markdown": None,
     }
 
 

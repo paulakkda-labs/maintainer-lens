@@ -11,6 +11,11 @@ from maintainer_lens.schemas.investigation_contracts import (
     CreateInvestigationRequest as CreateInvestigationRequest,
 )
 from maintainer_lens.schemas.investigation_contracts import InvestigationResult
+from maintainer_lens.schemas.investigation_progress import (
+    InvestigationErrorInfo,
+    InvestigationProgressEvent,
+)
+from maintainer_lens.schemas.investigation_reuse import InvestigationFreshness
 
 InvestigationStatus = Literal[
     "pending",
@@ -53,3 +58,9 @@ class InvestigationDetailResponse(BaseModel):
     issue: IssueSnapshotResponse | None
     result: InvestigationResult | None = None
     report_markdown: str | None = None
+    generation: int = 0
+    progress: InvestigationProgressEvent | None = None
+    last_error: InvestigationErrorInfo | None = None
+    freshness: InvestigationFreshness = InvestigationFreshness()
+    previous_report_task_id: str | None = None
+    previous_report_markdown: str | None = None

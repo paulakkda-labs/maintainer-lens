@@ -523,6 +523,16 @@ class _Harness:
 
     def install(self, monkeypatch):
         # This suite isolates SQL. Durable Saver/claim recovery has dedicated tests.
+        monkeypatch.setattr(
+            worker,
+            "InvestigationProgressReporter",
+            lambda *args: SimpleNamespace(phase=AsyncMock(), node=AsyncMock()),
+        )
+        monkeypatch.setattr(worker, "append_task_event", AsyncMock())
+        monkeypatch.setattr(
+            handler, "get_investigation_task_generation", AsyncMock(return_value=0)
+        )
+
         def checkpoint_store(factory, *, task_id, claim_token):
             assert factory is self.session_factory
 

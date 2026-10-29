@@ -24,8 +24,6 @@ from maintainer_lens.agents.investigation.tool_node import (
     create_tool_search_runner,
 )
 from maintainer_lens.agents.investigation_analysis import (
-    DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
-    ResponseLanguage,
     create_llm_analyzer,
 )
 from maintainer_lens.clients.embedding_factory import create_embedding_client
@@ -34,6 +32,10 @@ from maintainer_lens.clients.rabbitmq import create_rabbitmq_connection
 from maintainer_lens.core.config import get_settings
 from maintainer_lens.db.engine import create_db_engine
 from maintainer_lens.db.investigation_checkpoints import InvestigationCheckpointStore
+from maintainer_lens.db.investigation_progress import (
+    TaskEventRecorder,
+    append_task_event,
+)
 from maintainer_lens.db.session import create_session_factory
 from maintainer_lens.investigation_runner import (
     PermanentInvestigationError,
@@ -49,25 +51,35 @@ from maintainer_lens.messaging.topology import (
     QUEUE_NAME,
     declare_investigation_topology,
 )
-from maintainer_lens.schemas.investigation_checkpoint import (
-    GraphCheckpointConfig,
-    endpoint_fingerprint,
+from maintainer_lens.services.investigation_configuration import (
+    WORKER_EMBEDDING_PROVIDER as WORKER_EMBEDDING_PROVIDER,
+)
+from maintainer_lens.services.investigation_configuration import (
+    WORKER_GRAPH_TIMEOUT_SECONDS as WORKER_GRAPH_TIMEOUT_SECONDS,
+)
+from maintainer_lens.services.investigation_configuration import (
+    WORKER_MAX_SEARCH_ROUNDS as WORKER_MAX_SEARCH_ROUNDS,
+)
+from maintainer_lens.services.investigation_configuration import (
+    WORKER_RESPONSE_LANGUAGE as WORKER_RESPONSE_LANGUAGE,
+)
+from maintainer_lens.services.investigation_configuration import (
+    WORKER_TOOL_TIMEOUT_SECONDS as WORKER_TOOL_TIMEOUT_SECONDS,
+)
+from maintainer_lens.services.investigation_configuration import (
+    make_worker_execution_config,
 )
 from maintainer_lens.services.investigation_preparation import create_knowledge_preparer
 from maintainer_lens.services.investigation_processor import process_graph_investigation
+from maintainer_lens.services.investigation_progress import (
+    InvestigationProgressReporter,
+)
 from maintainer_lens.services.investigation_source_index import (
     InvestigationSourceIndexNotReadyError,
     get_investigation_source_index,
 )
 
 logger = logging.getLogger(__name__)
-
-# Graph budgets remain independent of submission-time preparation budgets.
-WORKER_RESPONSE_LANGUAGE: ResponseLanguage = "zh"
-WORKER_MAX_SEARCH_ROUNDS = 3
-WORKER_GRAPH_TIMEOUT_SECONDS = 120.0
-WORKER_TOOL_TIMEOUT_SECONDS = 60.0
-WORKER_EMBEDDING_PROVIDER = "openai-compatible"
 
 
 def build_investigation_message_handler(
@@ -77,6 +89,7 @@ def build_investigation_message_handler(
         [InvestigationRequestedMessage, str],
         Awaitable[None],
     ],
+    event_recorder: TaskEventRecorder | None = None,
 ) -> Callable[[AbstractIncomingMessage], Awaitable[None]]:
     """Build a message handler with its investigation dependencies."""
 
@@ -92,6 +105,9 @@ def build_investigation_message_handler(
                 claim_token,
             ),
             final_attempt=final_attempt,
+            **(
+                {"event_recorder": event_recorder} if event_recorder is not None else {}
+            ),
         )
 
     async def handle_message(
@@ -114,6 +130,7 @@ async def run_investigation_consumer(
         [InvestigationRequestedMessage, str],
         Awaitable[None],
     ],
+    event_recorder: TaskEventRecorder | None = None,
 ) -> None:
     """Consume investigation messages using the configured processor."""
 
@@ -121,6 +138,7 @@ async def run_investigation_consumer(
         session_factory=session_factory,
         exchange=exchange,
         investigate=investigate,
+        event_recorder=event_recorder,
     )
 
     await consume_investigations(
@@ -139,6 +157,7 @@ async def run_worker(
     """Start the worker and manage its investigation dependencies."""
 
     settings = get_settings()
+    production = investigate is None
 
     async with AsyncExitStack() as stack:
         engine = create_db_engine(settings.database_url.get_secret_value())
@@ -154,14 +173,6 @@ async def run_worker(
                 httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
             )
             embedding_client = create_embedding_client(embedding_http_client, settings)
-            knowledge_preparer = create_knowledge_preparer(
-                session_factory,
-                http_client,
-                embedding_client,
-                embedding_provider_name=WORKER_EMBEDDING_PROVIDER,
-                embedding_model=settings.embedding_model or "",
-                embedding_dimensions=settings.embedding_dimensions,
-            )
 
             llm_http_client = await stack.enter_async_context(
                 httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0))
@@ -249,6 +260,18 @@ async def run_worker(
                 request: InvestigationRequestedMessage,
                 claim_token: str,
             ) -> None:
+                progress = InvestigationProgressReporter(
+                    session_factory, request.task_id, claim_token
+                )
+                knowledge_preparer = create_knowledge_preparer(
+                    session_factory,
+                    http_client,
+                    embedding_client,
+                    embedding_provider_name=WORKER_EMBEDDING_PROVIDER,
+                    embedding_model=settings.embedding_model or "",
+                    embedding_dimensions=settings.embedding_dimensions,
+                    on_stage=progress.phase,
+                )
                 await process_graph_investigation(
                     http_client=http_client,
                     session_factory=session_factory,
@@ -277,33 +300,16 @@ async def run_worker(
                     ),
                     auto_prepare_knowledge=request.auto_prepare_knowledge,
                     knowledge_preparer=knowledge_preparer,
+                    progress=progress,
                     checkpoint_store=InvestigationCheckpointStore(
                         session_factory,
                         task_id=request.task_id,
                         claim_token=claim_token,
                     ),
-                    checkpoint_config=GraphCheckpointConfig(
-                        response_language=WORKER_RESPONSE_LANGUAGE,
-                        max_search_rounds=WORKER_MAX_SEARCH_ROUNDS,
-                        timeout_seconds=WORKER_GRAPH_TIMEOUT_SECONDS,
-                        search_strategy="tool",
+                    checkpoint_config=make_worker_execution_config(
+                        settings,
                         source_enabled=request.source_index_id is not None
                         or request.auto_prepare_knowledge,
-                        history_top_k=5,
-                        source_top_k=5,
-                        embedding_provider=WORKER_EMBEDDING_PROVIDER,
-                        embedding_model=settings.embedding_model or "",
-                        embedding_dimensions=settings.embedding_dimensions,
-                        embedding_endpoint_fingerprint=endpoint_fingerprint(
-                            settings.embedding_base_url or ""
-                        ),
-                        llm_model=settings.llm_model_name or "",
-                        llm_endpoint_fingerprint=endpoint_fingerprint(
-                            settings.llm_base_url or ""
-                        ),
-                        llm_max_output_tokens=DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
-                        thinking_enabled=False,
-                        tool_timeout_seconds=WORKER_TOOL_TIMEOUT_SECONDS,
                     ),
                 )
 
@@ -342,6 +348,7 @@ async def run_worker(
             exchange=exchange,
             session_factory=session_factory,
             investigate=investigate,
+            **({"event_recorder": append_task_event} if production else {}),
         )
 
 

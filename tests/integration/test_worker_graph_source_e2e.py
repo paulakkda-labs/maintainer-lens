@@ -24,7 +24,7 @@ import aio_pika
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 import maintainer_lens.services.investigation_submission as submission
 import maintainer_lens.services.outbox_dispatcher as dispatcher
@@ -48,6 +48,7 @@ from maintainer_lens.db.models.investigation_checkpoint import (
     InvestigationCheckpoint,
     InvestigationGraphRun,
 )
+from maintainer_lens.db.models.investigation_reuse import InvestigationUrlLookup
 from maintainer_lens.db.models.repository_history import RepositoryHistoryRecord
 from maintainer_lens.db.models.repository_history_embedding import (
     RepositoryHistoryEmbedding,
@@ -62,7 +63,9 @@ from maintainer_lens.messaging.topology import (
     ROUTING_KEY,
 )
 from maintainer_lens.schemas.investigation_contracts import InvestigationResult
+from maintainer_lens.schemas.investigation_reuse import InvestigationFreshness
 from maintainer_lens.schemas.repository import RepositorySource
+from maintainer_lens.services.investigation_freshness import render_observed_status
 from maintainer_lens.services.investigation_preparation import (
     AUTO_SOURCE_CHUNKER_VERSION,
 )
@@ -618,6 +621,14 @@ async def _cleanup(
 ):
     async with factory() as session, session.begin():
         await session.execute(
+            delete(InvestigationUrlLookup).where(
+                or_(
+                    InvestigationUrlLookup.task_id == task_id,
+                    InvestigationUrlLookup.report_task_id == task_id,
+                )
+            )
+        )
+        await session.execute(
             delete(InvestigationTask).where(InvestigationTask.id == task_id)
         )
         if fake or history_fetched_at is not None:
@@ -748,7 +759,18 @@ async def _post_dispatch_read(
                 )
                 assert result.source_index_id == effective_index
                 assert data["auto_prepare_knowledge"] == automatic
-                assert data["report_markdown"] == render_investigation_report(result)
+                expected_report = render_investigation_report(result)
+                if automatic:
+                    expected_report = render_observed_status(
+                        expected_report,
+                        result.response_language,
+                        state=data["issue"]["state"],
+                        checked_at=datetime.fromisoformat(data["issue"]["fetched_at"]),
+                        freshness=InvestigationFreshness.model_validate_json(
+                            json.dumps(data["freshness"])
+                        ),
+                    )
+                assert data["report_markdown"] == expected_report
                 assert result.history_evidence and result.analysis_evidence
                 assert bool(result.source_evidence) == (effective_index is not None)
                 watch.event.clear()
@@ -1214,8 +1236,10 @@ class _AutomaticProviders(_Providers):
                 return httpx.Response(200, json=[self.issue(124)])
             if path == prefix + "/issues/124/comments":
                 return httpx.Response(200, json=[])
-            if path == prefix + "/issues/123":
-                return httpx.Response(200, json=self.issue(123))
+            if path in (prefix + "/issues/123", prefix + "/issues/125"):
+                return httpx.Response(
+                    200, json=self.issue(int(path.rsplit("/", 1)[-1]))
+                )
             raise AssertionError(f"Unexpected automatic fixture request: {path}")
         if path.endswith("/embeddings"):
             payload = json.loads(request.content)
@@ -1258,7 +1282,7 @@ async def test_url_only_cold_start_and_ready_index_reuse_with_real_worker(
     try:
         async with _broker(settings) as broker:
             prepared_id = None
-            for _ in range(1 if over_budget else 2):
+            for iteration in range(1 if over_budget else 2):
                 task_id = str(uuid4())
                 task_ids.append(task_id)
                 watch = _Watch(
@@ -1275,7 +1299,7 @@ async def test_url_only_cold_start_and_ready_index_reuse_with_real_worker(
                         broker,
                         watch,
                         repository,
-                        123,
+                        123 + 2 * iteration,
                         None,
                         automatic=True,
                         transport=httpx.MockTransport(providers),
@@ -1475,6 +1499,15 @@ async def test_paid_url_only_automatic_preparation_worker_smoke(monkeypatch):
         stack.push_async_callback(engine.dispose)
         factory = create_session_factory(engine)
         async with factory() as session, session.begin():
+            task_exists = await session.scalar(
+                select(InvestigationTask.id)
+                .where(
+                    InvestigationTask.repository == LIVE_REPOSITORY,
+                    InvestigationTask.issue_number == TARGET_ISSUE,
+                    InvestigationTask.auto_prepare_knowledge.is_(True),
+                )
+                .limit(1)
+            )
             started_at = await session.scalar(select(func.clock_timestamp()))
             history_exists = await session.scalar(
                 select(RepositoryHistoryRecord.number)
@@ -1489,13 +1522,25 @@ async def test_paid_url_only_automatic_preparation_worker_smoke(monkeypatch):
                 )
                 .limit(1)
             )
-        if history_exists is not None or index_exists is not None:
+        if (
+            history_exists is not None
+            or index_exists is not None
+            or task_exists is not None
+        ):
             pytest.skip(
                 "Use a cold isolated DB without sampleproject History or automatic indexes; existing knowledge is preserved"
             )
 
         async def cleanup():
             async with factory() as session, session.begin():
+                await session.execute(
+                    delete(InvestigationUrlLookup).where(
+                        or_(
+                            InvestigationUrlLookup.task_id == task_id,
+                            InvestigationUrlLookup.report_task_id == task_id,
+                        )
+                    )
+                )
                 await session.execute(
                     delete(InvestigationTask).where(InvestigationTask.id == task_id)
                 )
@@ -1828,6 +1873,206 @@ async def test_checkpointed_worker_redelivery_reuses_cold_preparation_and_retrie
                 restored_run = await session.get(InvestigationGraphRun, task_id)
                 assert restored_run.fingerprint == run.fingerprint
                 assert restored_run.request_payload == run.request_payload
+    finally:
+        try:
+            await _cleanup(
+                factory,
+                task_id,
+                repository,
+                fake=True,
+                source_chunker_version=AUTO_SOURCE_CHUNKER_VERSION,
+            )
+        finally:
+            await engine.dispose()
+
+
+@requires_infrastructure
+async def test_url_resubmission_recovers_same_task_through_new_outbox_generation(
+    monkeypatch,
+):
+    """Actual API/PG/Outbox/MQ/default Worker with simulated HTTP providers."""
+    import maintainer_lens.api.routes.investigations as api_routes
+    from maintainer_lens.messaging.publisher import create_investigation_message
+    from maintainer_lens.messaging.schemas import RETRY_ATTEMPTS_HEADER
+    from maintainer_lens.services.investigation_configuration import (
+        make_worker_execution_config,
+    )
+    from maintainer_lens.services.investigation_freshness import IssueObservation
+    from maintainer_lens.services.investigation_url_reuse import (
+        resolve_investigation_url,
+    )
+
+    settings = _fake_settings(get_settings())
+    repository, task_id = f"url-recovery-e2e/repo-{uuid4().hex}", str(uuid4())
+    providers = _AutomaticProviders(repository)
+    fail_analysis = True
+
+    async def provider(request):
+        if (
+            fail_analysis
+            and request.url.path.endswith("/chat/completions")
+            and json.loads(request.content).get("tool_choice") is None
+        ):
+            providers.requests["llm"] += 1
+            return httpx.Response(
+                503, json={"error": {"message": "fake-secret-provider-response"}}
+            )
+        return await providers(request)
+
+    async def observe(repo, number):
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(providers)
+        ) as client:
+            issue = await fetch_github_issue(client, repo, number)
+            revision = await resolve_repository_revision(client, repo)
+        return IssueObservation(issue, revision.commit_sha, datetime.now(UTC))
+
+    async def resolve(factory, **kwargs):
+        return await resolve_investigation_url(
+            factory,
+            **kwargs,
+            observer=observe,
+            configuration_factory=lambda: make_worker_execution_config(
+                settings, source_enabled=True
+            ),
+        )
+
+    monkeypatch.setattr(api_routes, "resolve_investigation_url", resolve)
+    monkeypatch.setattr(submission, "uuid4", lambda: UUID(task_id))
+    original_claim = dispatcher.claim_next_outbox_event
+
+    async def scoped_claim(session):
+        claimed = await original_claim(session)
+        if claimed is not None and claimed.task_id != task_id:
+            raise AssertionError("URL recovery E2E requires an isolated Outbox")
+        return claimed
+
+    monkeypatch.setattr(dispatcher, "claim_next_outbox_event", scoped_claim)
+    original_publish = dispatcher.publish_investigation
+
+    async def publish(*, exchange, generation=0, **kwargs):
+        if generation == 0:
+            message = create_investigation_message(**kwargs)
+            message.headers = {RETRY_ATTEMPTS_HEADER: 3}
+            await exchange.publish(message, routing_key=ROUTING_KEY, mandatory=True)
+        else:
+            await original_publish(exchange=exchange, generation=generation, **kwargs)
+
+    monkeypatch.setattr(dispatcher, "publish_investigation", publish)
+    engine = create_db_engine(settings.database_url.get_secret_value())
+    factory = create_session_factory(engine)
+    app = FastAPI()
+    app.state.session_factory = factory
+    app.include_router(router)
+    try:
+        async with (
+            _broker(settings) as broker,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://test"
+            ) as client,
+        ):
+            watch = _Watch(
+                factory, task_id, expected_status="failed", snapshot_on_failure=True
+            )
+            ready, clients = _observe_worker(
+                monkeypatch,
+                settings,
+                broker,
+                watch,
+                transport=httpx.MockTransport(provider),
+            )
+            operation = asyncio.create_task(worker.run_worker())
+            try:
+                await _wait(operation, ready)
+                payload = {
+                    "issue_url": f"https://github.com/{repository}/issues/123",
+                    "knowledge_budget_profile": "small",
+                }
+                initial = await client.post("/investigations/from-url", json=payload)
+                assert (
+                    initial.status_code == 202
+                    and initial.json()["decision"] == "created"
+                )
+                assert await dispatcher.dispatch_one_outbox_event(
+                    factory, broker.exchange
+                )
+                await _wait(operation, watch.event)
+                detail = await client.get(f"/investigations/{task_id}")
+                assert detail.json()["status"] == "failed"
+                assert detail.json()["last_error"]["retryable"] is True
+                assert "fake-secret-provider-response" not in detail.text
+                dead = await broker.dead.get(timeout=5, fail=True)
+                assert (
+                    InvestigationRequestedMessage.model_validate_json(
+                        dead.body
+                    ).generation
+                    == 0
+                )
+                await dead.ack()
+                fail_analysis = False
+                retried = await client.post("/investigations/from-url", json=payload)
+                assert retried.status_code == 202
+                assert (
+                    retried.json()["task_id"] == task_id
+                    and retried.json()["decision"] == "resumed"
+                )
+                assert retried.json()["generation"] == 1
+                before = providers.requests.copy()
+                watch.expected_status, watch.event = "pending", asyncio.Event()
+                # A delayed old delivery is ACKed without consuming the new claim.
+                await publish_investigation(
+                    broker.exchange,
+                    task_id,
+                    repository,
+                    123,
+                    auto_prepare_knowledge=True,
+                )
+                await _wait(operation, watch.event)
+                assert providers.requests == before
+                watch.expected_status, watch.event = "succeeded", asyncio.Event()
+                assert await dispatcher.dispatch_one_outbox_event(
+                    factory, broker.exchange
+                )
+                await _wait(operation, watch.event)
+                final = (await client.get(f"/investigations/{task_id}")).json()
+                assert final["status"] == "succeeded" and final["generation"] == 1
+                assert final["result"]["search_round"] == 2 and final["report_markdown"]
+                assert providers.requests["github"] == before["github"]
+                assert providers.requests["embedding"] == before["embedding"] + 1
+                assert watch.acknowledgements == 3
+                cached = await client.post("/investigations/from-url", json=payload)
+                assert (
+                    cached.status_code == 200 and cached.json()["decision"] == "reused"
+                )
+                assert (
+                    cached.json()["task_id"] == task_id
+                    and cached.json()["report_markdown"]
+                )
+                events = (
+                    await client.get(
+                        f"/investigations/{task_id}/events", params={"limit": 100}
+                    )
+                ).json()["events"]
+                assert any(
+                    event["kind"] == "failed" and event["phase"] == "analyzing"
+                    for event in events
+                )
+                assert (
+                    events[-1]["kind"] == "completed" and events[-1]["generation"] == 1
+                )
+                async with factory() as session:
+                    envelopes = (
+                        await session.scalars(
+                            select(InvestigationOutboxEvent).where(
+                                InvestigationOutboxEvent.task_id == task_id
+                            )
+                        )
+                    ).all()
+                    assert sorted(event.generation for event in envelopes) == [0, 1]
+                    assert all(event.published_at is not None for event in envelopes)
+            finally:
+                await _stop(operation)
+                assert len(clients) == 3 and all(client.is_closed for client in clients)
     finally:
         try:
             await _cleanup(

@@ -11,6 +11,14 @@ x-app-build: &app-build
   context: .
   dockerfile: Dockerfile
 
+# Non-secret execution identity must agree between URL resolution and the Worker.
+x-investigation-profile-env: &investigation-profile-env
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_MODEL_NAME: ${LLM_MODEL_NAME:-}
+  EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+
 services:
   postgres:
     restart: unless-stopped
@@ -108,7 +116,9 @@ services:
     build: *app-build
     image: maintainer-lens:dev
     command: ["uvicorn", "maintainer_lens.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment: *app-env
+    environment:
+      <<: [*app-env, *investigation-profile-env]
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
@@ -145,15 +155,10 @@ services:
     image: maintainer-lens:dev
     command: ["python", "-m", "maintainer_lens.worker"]
     environment:
-      <<: *app-env
+      <<: [*app-env, *investigation-profile-env]
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_MODEL_NAME: ${LLM_MODEL_NAME:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
-      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       EMBEDDING_MAX_BATCH_SIZE: ${EMBEDDING_MAX_BATCH_SIZE:-20}
       EMBEDDING_REQUEST_DIMENSIONS: ${EMBEDDING_REQUEST_DIMENSIONS:-}
     restart: unless-stopped

@@ -17,6 +17,7 @@ from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
 from maintainer_lens.schemas.investigation_budget import (
     make_knowledge_preparation_budget,
 )
+from maintainer_lens.schemas.investigation_reuse import InvestigationFreshness
 
 
 def create_test_app() -> FastAPI:
@@ -130,6 +131,12 @@ async def test_get_pending_investigation_without_snapshot(
         "knowledge_budget": make_knowledge_preparation_budget().model_dump(),
         "auto_prepare_knowledge": False,
         "prepared_source_index_id": None,
+        "generation": 0,
+        "progress": None,
+        "last_error": None,
+        "freshness": InvestigationFreshness().model_dump(mode="json"),
+        "previous_report_task_id": None,
+        "previous_report_markdown": None,
     }
 
     query.assert_awaited_once_with(session, "task-001")

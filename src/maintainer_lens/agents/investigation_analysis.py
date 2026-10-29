@@ -10,6 +10,22 @@ from pydantic import BaseModel, ConfigDict, Field
 type ResponseLanguage = Literal["zh", "en"]
 
 
+class AnalysisGenerationIncompleteError(ValueError):
+    """Generation stopped without a complete analysis; expose only safe reasons."""
+
+    def __init__(self, finish_reason: object):
+        self.finish_reason = (
+            finish_reason
+            if isinstance(finish_reason, str)
+            and finish_reason
+            in ("length", "content_filter", "tool_calls", "function_call")
+            else "unknown"
+        )
+        super().__init__(
+            f"LLM generation did not finish normally: {self.finish_reason}"
+        )
+
+
 class AnalysisEvidence(TypedDict):
     """An evidence excerpt supplied to the LLM."""
 
@@ -215,7 +231,7 @@ def create_llm_analyzer(
             raise ValueError("LLM returned an invalid chat completion") from exc
 
         if finish_reason != "stop":
-            raise ValueError(f"LLM generation did not finish normally: {finish_reason}")
+            raise AnalysisGenerationIncompleteError(finish_reason)
 
         if not isinstance(content, str) or not content.strip():
             raise ValueError("LLM returned empty or invalid content")

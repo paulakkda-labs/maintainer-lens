@@ -13,6 +13,7 @@ from maintainer_lens.agents.investigation.evidence import (
     to_history_evidence,
     to_source_evidence,
 )
+from maintainer_lens.agents.investigation.progress import NodeObserver
 from maintainer_lens.agents.investigation.query_planning import FollowUpQueryPlanner
 from maintainer_lens.agents.investigation.routing import assess_next_step
 from maintainer_lens.agents.investigation.state import (
@@ -158,6 +159,7 @@ def _prepare_execution(
     query_planner: FollowUpQueryPlanner | None = None,
     tool_search_runner: ToolSearchRunner | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    node_observer: NodeObserver | None = None,
 ) -> tuple[InvestigationInput, CompiledStateGraph, InvestigationState]:
     """Validate options and compile a fresh or checkpoint-capable investigation graph."""
 
@@ -190,6 +192,7 @@ def _prepare_execution(
         ("source_searcher", source_searcher),
         ("query_planner", query_planner),
         ("tool_search_runner", tool_search_runner),
+        ("node_observer", node_observer),
     ):
         if dependency is not None and not callable(dependency):
             raise ValueError(f"{name} must be callable")
@@ -204,6 +207,7 @@ def _prepare_execution(
         query_planner=query_planner,
         tool_search_runner=tool_search_runner,
         **({"checkpointer": checkpointer} if checkpointer is not None else {}),
+        **({"node_observer": node_observer} if node_observer is not None else {}),
     )
     initial_state: InvestigationState = {
         "repository": request.repository,
