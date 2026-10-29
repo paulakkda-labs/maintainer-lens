@@ -15,7 +15,7 @@ import os
 from collections import Counter
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha1, sha256
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -24,7 +24,7 @@ import aio_pika
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 import maintainer_lens.services.investigation_submission as submission
 import maintainer_lens.services.outbox_dispatcher as dispatcher
@@ -43,6 +43,10 @@ from maintainer_lens.db.investigation_queries import get_investigation_details
 from maintainer_lens.db.models.investigation import (
     InvestigationOutboxEvent,
     InvestigationTask,
+)
+from maintainer_lens.db.models.investigation_checkpoint import (
+    InvestigationCheckpoint,
+    InvestigationGraphRun,
 )
 from maintainer_lens.db.models.repository_history import RepositoryHistoryRecord
 from maintainer_lens.db.models.repository_history_embedding import (
@@ -1671,3 +1675,167 @@ async def test_source_smoke_rejects_invalid_or_excessive_output_budgets_offline(
     with pytest.raises(_BudgetExceeded):
         await budget.llm(request)
     assert not budget.counts
+
+
+@requires_infrastructure
+async def test_checkpointed_worker_redelivery_reuses_cold_preparation_and_retrieval(
+    monkeypatch,
+):
+    """Cancel a real Worker in analysis, then recover the unacked delivery.
+
+    SQL and RabbitMQ are real; GitHub/embedding/LLM use MockTransport. Lease
+    expiry is advanced explicitly only for this owned test Task. No paid calls.
+    """
+    settings = _fake_settings(get_settings())
+    repository, task_id = f"checkpoint-e2e/repo-{uuid4().hex}", str(uuid4())
+    providers = _AutomaticProviders(repository)
+    entered, cleaned = asyncio.Event(), asyncio.Event()
+    first_analysis = True
+
+    async def transport(request):
+        nonlocal first_analysis
+        if (
+            first_analysis
+            and request.url.path.endswith("/chat/completions")
+            and json.loads(request.content).get("tool_choice") is None
+        ):
+            first_analysis = False
+            providers.requests["llm"] += 1
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+        return await providers(request)
+
+    engine = create_db_engine(settings.database_url.get_secret_value())
+    factory = create_session_factory(engine)
+    app = FastAPI()
+    app.state.session_factory = factory
+    app.include_router(router)
+    monkeypatch.setattr(submission, "uuid4", lambda: UUID(task_id))
+    original_claim = dispatcher.claim_next_outbox_event
+
+    async def scoped_claim(session):
+        claimed = await original_claim(session)
+        if claimed is not None and claimed.task_id != task_id:
+            raise AssertionError("Recovery E2E requires an isolated Outbox")
+        return claimed
+
+    monkeypatch.setattr(dispatcher, "claim_next_outbox_event", scoped_claim)
+    redeliveries = []
+
+    class RecoveryWatch(_Watch):
+        async def before_ack(self, message):
+            redeliveries.append(message.redelivered)
+            await super().before_ack(message)
+
+    watch = RecoveryWatch(factory, task_id)
+    try:
+        async with (
+            _broker(settings) as broker,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://test"
+            ) as client,
+        ):
+            response = await client.post(
+                "/investigations/from-url",
+                json={
+                    "issue_url": f"https://github.com/{repository}/issues/123",
+                    "knowledge_budget_profile": "small",
+                },
+            )
+            assert response.status_code == 202 and response.json()["task_id"] == task_id
+            assert await dispatcher.dispatch_one_outbox_event(factory, broker.exchange)
+            with monkeypatch.context() as patch:
+                ready, clients = _observe_worker(
+                    patch,
+                    settings,
+                    broker,
+                    watch,
+                    transport=httpx.MockTransport(transport),
+                )
+                operation = asyncio.create_task(worker.run_worker())
+                try:
+                    await _wait(operation, ready)
+                    await _wait(operation, entered)
+                    async with factory() as session:
+                        task, snapshot, result = await get_investigation_details(
+                            session, task_id
+                        )
+                        assert (
+                            task.status == "running"
+                            and snapshot is not None
+                            and result is None
+                        )
+                        old_token, index_id = (
+                            task.claim_token,
+                            task.prepared_source_index_id,
+                        )
+                        run = await session.get(InvestigationGraphRun, task_id)
+                        frames = await session.scalar(
+                            select(func.count())
+                            .select_from(InvestigationCheckpoint)
+                            .where(InvestigationCheckpoint.task_id == task_id)
+                        )
+                    assert old_token and index_id and run is not None and frames >= 3
+                    before = providers.requests.copy()
+                    document_inputs = list(providers.document_inputs)
+                finally:
+                    await _stop(operation)
+                assert cleaned.is_set() and watch.acknowledgements == 0
+                assert len(clients) == 3 and all(client.is_closed for client in clients)
+            # A crashed owner keeps a running Task until its existing lease expires.
+            async with factory() as session, session.begin():
+                await session.execute(
+                    update(InvestigationTask)
+                    .where(InvestigationTask.id == task_id)
+                    .values(
+                        lease_expires_at=func.clock_timestamp() - timedelta(seconds=1)
+                    )
+                )
+            with monkeypatch.context() as patch:
+                ready, clients = _observe_worker(
+                    patch,
+                    settings,
+                    broker,
+                    watch,
+                    transport=httpx.MockTransport(transport),
+                )
+                operation = asyncio.create_task(worker.run_worker())
+                try:
+                    await _wait(operation, ready)
+                    await _wait(operation, watch.event)
+                    detail = await client.get(f"/investigations/{task_id}")
+                    assert detail.status_code == 200
+                    data = detail.json()
+                    assert data["status"] == "succeeded" and data[
+                        "prepared_source_index_id"
+                    ] == str(index_id)
+                    assert data["result"]["search_round"] == 2
+                    assert data["result"]["next_step"] == "needs_more_evidence"
+                    assert data["report_markdown"]
+                finally:
+                    await _stop(operation)
+                assert len(clients) == 3 and all(client.is_closed for client in clients)
+            assert redeliveries == [True] and watch.acknowledgements == 1
+            assert providers.requests["github"] == before["github"]
+            # Only the follow-up Source tool embeds a query after recovery.
+            assert providers.requests["embedding"] == before["embedding"] + 1
+            assert providers.document_inputs[: len(document_inputs)] == document_inputs
+            assert providers.source_calls == Counter(branch=1, tree=1, blob=1)
+            async with factory() as session:
+                restored_run = await session.get(InvestigationGraphRun, task_id)
+                assert restored_run.fingerprint == run.fingerprint
+                assert restored_run.request_payload == run.request_payload
+    finally:
+        try:
+            await _cleanup(
+                factory,
+                task_id,
+                repository,
+                fake=True,
+                source_chunker_version=AUTO_SOURCE_CHUNKER_VERSION,
+            )
+        finally:
+            await engine.dispose()

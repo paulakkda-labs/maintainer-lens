@@ -126,13 +126,15 @@ with a bound Source UUID validates and reuses it without selecting a newer HEAD
 or repeating knowledge preparation. Before binding, a completed compatible
 Source index and unchanged History embeddings may still be reused.
 
-Per attempt, initial retrieval makes one query embedding per enabled corpus;
+For a fresh execution, initial retrieval makes one query embedding per enabled corpus;
 at most two follow-up searches and three analyses can occur. Each executed tool
 step additionally makes selection and feedback Chat requests: at most seven
 Chat requests total. Duplicate queries or no new evidence stop early. Running the
-default Worker can incur provider charges; existing bounded delivery retries
-can repeat those requests. The
-Graph deadline excludes GitHub snapshot acquisition and result commit. The Worker explicitly disables thinking for
+default Worker can incur provider charges. Checkpointed retries reuse committed
+steps, but calls whose output was not persisted can repeat under the existing
+bounded delivery policy. The active Graph-segment deadline includes checkpoint
+I/O and excludes GitHub snapshot acquisition, knowledge preparation, frozen-run
+setup and result commit. The Worker explicitly disables thinking for
 analysis as it already does for tool steps. Analysis defaults to 4,096 output
 tokens; application callers can pass a supported positive integer through
 `create_llm_analyzer(..., max_output_tokens=8192)`, for example. The default
@@ -617,12 +619,74 @@ provider. They do not log analysis text, reasoning text or credentials. An HTTP
 analysis; the final task-status assertion reports that failure. Character counts
 are not token counts.
 
-Before M4 closure, inspect a saved report against actual returned evidence:
+When reviewing report quality, inspect a saved report against actual returned evidence:
 check that each finding's cited excerpt supports its statement, Source links pin
 the actual commit/path/lines, and hypotheses/open questions remain clearly
 qualified. A successful or insufficient-evidence smoke is plumbing evidence,
 not proof of general root-cause accuracy. Finish default tests, relevant real
-infrastructure suites, focused report review and reviewed green CI before M5.
+infrastructure suites and focused report review, and require reviewed green CI
+for each change. M4 backend integration is merged through PR #14.
+
+### Durable Graph recovery acceptance
+
+Before starting the updated Worker, stop older Worker instances and apply the
+additive migration manually through the normal environment. No new dependency,
+`.env` setting or driver is required. The new head is `f9a4d6e8b205`, extending
+`e8b3c7d9a204`. This migration creates only Graph run/checkpoint/pending-write
+tables; it does not backfill completed or legacy tasks.
+
+```bash
+uv run --locked alembic upgrade head
+uv run --locked alembic current
+uv run --locked pytest -q \
+  tests/test_investigation_checkpoint_contracts.py \
+  tests/test_investigation_checkpoint_execution.py \
+  tests/test_worker_production_wiring.py \
+  tests/agents/test_investigation_application_execution.py \
+  tests/integration/test_investigation_processor_pipeline.py
+```
+
+The first two suites exercise contracts and the actual compiled Graph/custom
+Saver with isolated storage and simulated dependencies. The Worker wiring suite
+uses the SDK's memory Saver to isolate resource assembly; it does not prove SQL
+fencing. The opt-in suites below use the existing configured test infrastructure
+and perform scoped test writes/cleanup. Providers are simulated; paid flags
+remain off.
+
+```bash
+RUN_POSTGRES_INTEGRATION=1 uv run --locked pytest -q \
+  tests/integration/test_investigation_checkpoint_persistence.py \
+  tests/integration/test_investigation_result_persistence.py \
+  tests/integration/test_investigation_result_readback.py
+
+RUN_POSTGRES_INTEGRATION=1 RUN_RABBITMQ_INTEGRATION=1 \
+  uv run --locked pytest -q tests/integration/test_worker_graph_source_e2e.py
+
+uv run --locked pytest -q
+```
+
+The checkpoint persistence suite tests row-lock waits, fresh lease fencing,
+rollback/cancellation, replacement claims and a result-committed/status-unfinished
+crash. The Worker E2E suite includes
+`test_checkpointed_worker_redelivery_reuses_cold_preparation_and_retrieval`: it
+cancels analysis, advances only its own Task lease, restarts the default Worker
+and checks a real unacked redelivery. It reuses frozen input, prepared Source and
+committed initial retrieval. Existing paid smoke commands are still independently
+opt-in; the new recovery tests do not require them.
+
+Each Task uses one stable Graph thread. A replacement claim validates frozen
+Graph/SDK/model/provider configuration before resuming; mismatch/corruption
+fails explicitly without discarding progress. Each active Graph segment gets
+120 seconds, while persisted rounds remain bounded to three and MQ attempts
+retain their existing limit. Checkpoint I/O is inside that segment; cleanup is
+awaited on cancellation. The final checkpoint precedes fenced result commit,
+Runner success and ACK. In-flight calls may repeat if their output was not
+persisted; this is not an exactly-once or cumulative monetary-budget guarantee.
+
+Normal reports remain automatic. Budget-triggered human decisions, review APIs,
+waiting states and trusted memory are planned separately. No invalid or truncated
+result becomes acceptable simply because progress was saved. These new M5 tests
+have been supplied but have not yet been executed by the assistant.
 
 ### Repository retrieval evaluation
 
@@ -709,7 +773,7 @@ not a product report viewer or file-export endpoint.
 
 ## Current milestone and contribution workflow
 
-The M4 backend implements URL intake, automatic knowledge preparation/reuse, fenced Source identity binding, bounded tools and saved Markdown reports under the original Runner. The maintainer confirmed local regression/infrastructure checks and automatic paid smoke passed; report/citation review and reviewed green CI/merge remain. Before work, review `docs/ARCHITECTURE.md`, current source and tests; keep `agents/investigation_graph.py` strictly for node/edge composition. M5 will add persistent LangGraph checkpointing, human-in-the-loop decisions and trusted memory; M6 will focus on release-quality reliability, evaluation, UI and a Chinese README. V2 adds private repository authorization.
+M4 backend integration is merged through PR #14, including URL intake, automatic knowledge preparation, bounded tools and saved reports. The maintainer confirmed local regressions, infrastructure and paid acceptance, and the CI fix. M5 checkpoint/recovery code and acceptance tests are implemented in the current slice; its migration and pytest acceptance are pending. On-demand human decisions and trusted memory remain later M5 work. Before changes, review `docs/ARCHITECTURE.md`, current source and relevant tests. M6 covers release reliability, representative report evaluation, UI and a Chinese README; V2 adds private repository authorization.
 
 Use `feat/**` / `fix/**` / `docs/**` branches and reviewed squash-merge PRs; do not push to `main` directly. Before merging run Ruff, default pytest, appropriate opt-in integration tests and GitHub CI. Clearly label which integration levels actually ran. See [Roadmap](docs/ROADMAP.md) for milestones and [ADR](docs/ADR/) for established technical decisions.
 

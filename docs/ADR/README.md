@@ -13,12 +13,12 @@ Keep context, decisions and consequences here. Development branch names, test-se
 | [2026-10-27-versioned-source-and-history-rag.md](2026-10-27-versioned-source-and-history-rag.md) | Accepted (historical) | Commit-pinned source and separate history retrieval; exact pgvector, selected hybrid |
 | [2026-10-27-bounded-modular-agent.md](2026-10-27-bounded-modular-agent.md) | Accepted | Modular bounded LangGraph, application execution boundary and durable preliminary results |
 | [2026-10-28-source-selection-and-derived-reports.md](2026-10-28-source-selection-and-derived-reports.md) | Accepted | Explicit Source identity across delivery/storage, bounded Worker tools and derived reports |
-
 | [2026-10-28-automatic-investigation-preparation.md](2026-10-28-automatic-investigation-preparation.md) | Accepted | URL intake, persisted preparation budgets, complete Source reuse/build and fenced prepared identity |
 
-Checkpoint recovery, HITL and private-repository access remain future design work.
-The Worker supports automatic preparation as well as explicit knowledge selection;
-GET derives Markdown without extra inference. The original Runner, task status,
-claim fencing and ACK semantics remain authoritative. Automatic cold-start
-acceptance was separately confirmed by the maintainer on 2026-10-29; report review
-and reviewed green CI/merge remain milestone gates.
+| [2026-10-29-claim-fenced-graph-checkpoints.md](2026-10-29-claim-fenced-graph-checkpoints.md) | Accepted | Task-linked frozen execution, async SQLAlchemy Saver and claim-fenced recovery |
+
+The Worker supports automatic preparation, explicit knowledge selection and
+checkpoint recovery. GET derives Markdown without extra inference. The original
+Runner, task status, claim fencing and ACK semantics remain authoritative. M4 is
+merged through PR #14. New checkpoint migration/test acceptance is pending; HITL,
+trusted memory and private-repository access remain future work.

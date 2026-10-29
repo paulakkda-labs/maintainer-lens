@@ -15,13 +15,14 @@ from uuid import UUID
 
 import httpx
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.exc import SQLAlchemyError
 
 import maintainer_lens.agents.investigation.execution as tool_controls
 import maintainer_lens.clients.github_http as github_http
 import maintainer_lens.investigation_runner as runner
 import maintainer_lens.messaging.handler as handler
-import maintainer_lens.services.investigation_execution as execution
+import maintainer_lens.services.investigation_checkpoint_execution as execution
 import maintainer_lens.services.investigation_processor as processor
 import maintainer_lens.services.issue_investigator as issue_service
 import maintainer_lens.worker as worker
@@ -32,6 +33,10 @@ from maintainer_lens.db.models.repository_history_embedding import (
 from maintainer_lens.db.models.repository_index import RepositoryChunk, RepositoryIndex
 from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
 from maintainer_lens.messaging.topology import DEAD_ROUTING_KEY, RETRY_ROUTING_KEY
+from maintainer_lens.schemas.investigation_checkpoint import (
+    FrozenInvestigationRun,
+    execution_fingerprint,
+)
 
 pytestmark = pytest.mark.anyio
 REPOSITORY = "encode/httpx"
@@ -517,6 +522,35 @@ class _Harness:
         )
 
     def install(self, monkeypatch):
+        # This suite isolates SQL. Durable Saver/claim recovery has dedicated tests.
+        def checkpoint_store(factory, *, task_id, claim_token):
+            assert factory is self.session_factory
+
+            async def create_run(request, config):
+                assert self.snapshot_committed and self.transactions == 0
+                return FrozenInvestigationRun(
+                    task_id=task_id,
+                    request=request,
+                    execution=config,
+                    fingerprint=execution_fingerprint(request, config),
+                )
+
+            return SimpleNamespace(
+                task_id=task_id,
+                claim_token=claim_token,
+                load_run=AsyncMock(return_value=None),
+                create_run=create_run,
+            )
+
+        monkeypatch.setattr(worker, "InvestigationCheckpointStore", checkpoint_store)
+
+        class MemorySaver(InMemorySaver):
+            def cancel_pending(self, *, exclude):
+                pass  # This suite replaces SQL; no pending database I/O exists.
+
+        monkeypatch.setattr(
+            execution, "InvestigationCheckpointSaver", lambda store: MemorySaver()
+        )
         monkeypatch.setattr(worker, "get_settings", lambda: self.settings)
         monkeypatch.setattr(
             worker, "create_db_engine", Mock(side_effect=self.create_engine)
@@ -601,6 +635,11 @@ async def test_default_worker_runs_graph_and_commits_before_success_and_ack(
     assert options["session_factory"] is harness.session_factory
     assert options["source_searcher"] is None
     assert options["source_index_id"] is None
+    assert options["checkpoint_store"].task_id == harness.request.task_id
+    assert options["checkpoint_store"].claim_token == CLAIM_TOKEN
+    assert options["checkpoint_config"].llm_max_output_tokens == 4096
+    assert options["checkpoint_config"].max_search_rounds == 3
+    assert options["checkpoint_config"].search_strategy == "tool"
     assert "query_planner" not in options
     assert callable(options["tool_search_runner"])
     assert callable(options["source_index_validator"])
@@ -801,7 +840,16 @@ async def test_whole_graph_deadline_uses_existing_retry_policy(harness, monkeypa
 
     # Reschedule the real scope after retrieval starts; do not race Graph setup
     # against a tiny wall-clock budget or mock the compiled Graph invocation.
-    monkeypatch.setattr(execution, "asyncio", SimpleNamespace(timeout=deadline))
+    monkeypatch.setattr(
+        execution,
+        "asyncio",
+        SimpleNamespace(
+            timeout=deadline,
+            create_task=asyncio.create_task,
+            shield=asyncio.shield,
+            gather=asyncio.gather,
+        ),
+    )
     operation = asyncio.create_task(worker.run_worker())
     try:
         async with asyncio.timeout(3):

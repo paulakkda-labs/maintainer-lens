@@ -24,6 +24,7 @@ from maintainer_lens.agents.investigation.tool_node import (
     create_tool_search_runner,
 )
 from maintainer_lens.agents.investigation_analysis import (
+    DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
     ResponseLanguage,
     create_llm_analyzer,
 )
@@ -32,6 +33,7 @@ from maintainer_lens.clients.github_http import create_github_http_client
 from maintainer_lens.clients.rabbitmq import create_rabbitmq_connection
 from maintainer_lens.core.config import get_settings
 from maintainer_lens.db.engine import create_db_engine
+from maintainer_lens.db.investigation_checkpoints import InvestigationCheckpointStore
 from maintainer_lens.db.session import create_session_factory
 from maintainer_lens.investigation_runner import (
     PermanentInvestigationError,
@@ -46,6 +48,10 @@ from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
 from maintainer_lens.messaging.topology import (
     QUEUE_NAME,
     declare_investigation_topology,
+)
+from maintainer_lens.schemas.investigation_checkpoint import (
+    GraphCheckpointConfig,
+    endpoint_fingerprint,
 )
 from maintainer_lens.services.investigation_preparation import create_knowledge_preparer
 from maintainer_lens.services.investigation_processor import process_graph_investigation
@@ -271,6 +277,34 @@ async def run_worker(
                     ),
                     auto_prepare_knowledge=request.auto_prepare_knowledge,
                     knowledge_preparer=knowledge_preparer,
+                    checkpoint_store=InvestigationCheckpointStore(
+                        session_factory,
+                        task_id=request.task_id,
+                        claim_token=claim_token,
+                    ),
+                    checkpoint_config=GraphCheckpointConfig(
+                        response_language=WORKER_RESPONSE_LANGUAGE,
+                        max_search_rounds=WORKER_MAX_SEARCH_ROUNDS,
+                        timeout_seconds=WORKER_GRAPH_TIMEOUT_SECONDS,
+                        search_strategy="tool",
+                        source_enabled=request.source_index_id is not None
+                        or request.auto_prepare_knowledge,
+                        history_top_k=5,
+                        source_top_k=5,
+                        embedding_provider=WORKER_EMBEDDING_PROVIDER,
+                        embedding_model=settings.embedding_model or "",
+                        embedding_dimensions=settings.embedding_dimensions,
+                        embedding_endpoint_fingerprint=endpoint_fingerprint(
+                            settings.embedding_base_url or ""
+                        ),
+                        llm_model=settings.llm_model_name or "",
+                        llm_endpoint_fingerprint=endpoint_fingerprint(
+                            settings.llm_base_url or ""
+                        ),
+                        llm_max_output_tokens=DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
+                        thinking_enabled=False,
+                        tool_timeout_seconds=WORKER_TOOL_TIMEOUT_SECONDS,
+                    ),
                 )
 
             investigate = production_investigate
