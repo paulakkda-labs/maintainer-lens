@@ -2,7 +2,7 @@
 
 **Evidence-grounded, asynchronous GitHub Issue investigation for open-source maintainers.**
 
-MaintainerLens is an Apache-2.0 project under active development. V1 targets **public GitHub repositories** and a read-only, server-side investigation experience: reliable asynchronous Issue intake; source/documentation and historical Issue/PR retrieval; bounded LangGraph reasoning; evidence-linked conclusions; recoverable workflows; and on-demand human review. Trusted long-term memory remains planned. It is not an IDE code-editing assistant or an automatic source patcher.
+MaintainerLens is an Apache-2.0 project under active development. V1 targets **public GitHub repositories** and a read-only, server-side investigation experience: reliable asynchronous Issue intake; source/documentation and historical Issue/PR retrieval; bounded LangGraph reasoning; evidence-linked conclusions; recoverable workflows; and on-demand human review. Cross-investigation project memory is deferred pending evidence of benefit. It is not an IDE code-editing assistant or an automatic source patcher.
 
 ## Current capabilities
 
@@ -21,11 +21,12 @@ MaintainerLens is an Apache-2.0 project under active development. V1 targets **p
 original claim/lease Runner. `POST /investigations/from-url` resolves active work,
 a reusable report or a new investigation with managed Source/History preparation.
 The lower-level repository/Issue/optional Source UUID endpoint remains available.
-M4 integration, M5 checkpoints and URL reuse are merged through PRs #14–#16 with
-maintainer-confirmed local acceptance. The on-demand review extension is supplied
-on its feature branch; the maintainer confirmed local tests passed and services restarted. PR review, CI and merge remain pending. Trusted
-long-term memory and a product Web UI are not implemented. Broader semantic
-report-quality evaluation remains a release concern.
+M4 integration, M5 checkpoints, URL reuse and on-demand review are merged through
+PRs #14–#17 with maintainer-confirmed local acceptance. The review feature's
+service restart was also confirmed; CI was not independently inspected here.
+Combined workflow closure acceptance is supplied below and awaits execution.
+Project memory, conversational follow-up and a product Web UI are not
+implemented. Broader semantic report-quality evaluation remains a release concern.
 
 [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [Architecture decisions](docs/ADR/README.md)
@@ -685,8 +686,9 @@ awaited on cancellation. The final checkpoint precedes fenced result commit,
 Runner success and ACK. In-flight calls may repeat if their output was not
 persisted; this is not an exactly-once or cumulative monetary-budget guarantee.
 
-Normal reports remain automatic. Budget-triggered human decisions, review APIs,
-waiting states and trusted memory are planned separately. No invalid or truncated
+Normal reports remain automatic. Budget-triggered decisions and waiting states
+are implemented in the [review extension](#on-demand-human-review).
+Cross-investigation project memory is deferred. No invalid or truncated
 result becomes acceptable simply because progress was saved. The maintainer
 confirmed checkpoint acceptance passed before PR #15; rerun it after the new
 URL migration. The assistant did not execute pytest.
@@ -783,7 +785,10 @@ same URL, dispatches a new Outbox generation and recovers the same checkpoint
 thread. It also injects a stale delivery and checks it does not consume the new
 claim. SQL/MQ are real; providers are simulated. Existing paid smoke flags remain
 independently opt-in. These new acceptance tests have not yet been executed by
-the assistant. The maintainer reports local tests passed and services started; Git contains squash merge PR #16. Human-review acceptance below remains pending. No automatic migration is performed by the application.
+the assistant. The maintainer reports local tests passed and services started;
+Git contains squash merges #16 and #17. Prior review acceptance was confirmed;
+the combined closure suite below awaits execution. No automatic migration is
+performed by the application.
 
 ### On-demand human review
 
@@ -887,8 +892,61 @@ docker compose ps -a
 Host-mode migration remains `uv run --locked alembic upgrade head`. Revision
 `1bc6f8a0d417` adds the review table and separate counters, backfills user recovery
 counts, and refuses downgrade when human-review history exists. No migration or
-pytest has been run by the assistant. The maintainer confirmed local tests passed and services restarted; PR review, CI and merge remain pending. New provider scenarios are simulated and
+pytest has been run by the assistant. The maintainer confirmed local tests passed
+and services restarted; Git contains squash merge PR #17. CI was not independently
+inspected here. New provider scenarios are simulated and
 require no paid API; existing paid smoke switches remain independently opt-in.
+
+### Workflow closure acceptance
+
+The combined service suite adds three cross-boundary scenarios:
+
+- An output-budget approval survives a later transient failure and URL-triggered
+  recovery. The saved rounds/retrieval are reused; the original Run stays frozen;
+  budget/user quotas remain independent and stale generations do not execute.
+- A human-accepted complete analysis survives external cancellation after result
+  commit but before task success. GET/URL readback hides the artifact until
+  completion; lease-expiry redelivery stores the same accepted result without
+  another analysis, retrieval or knowledge-preparation call.
+- A changed repository revision starts a new Task while retaining the previous
+  report. Waiting and rejecting the new investigation preserve the historical
+  report without presenting it as current or silently approving/resuming work.
+
+These tests use real PostgreSQL, HTTP routes, the original Runner/Processor and
+the actual compiled checkpointed Graph with deterministic follow-up. Providers
+are simulated; the knowledge-preparation stub returns test-owned ready index
+metadata and retrieval is injected. This suite does not test index construction,
+default Worker assembly, RabbitMQ, paid providers or semantic report accuracy.
+The existing Source E2E suite supplies the real MQ/default Worker layer.
+
+No schema/configuration change is introduced by this closure work. If your
+database is already at `1bc6f8a0d417`, no further upgrade is needed. Use dedicated
+test infrastructure. Keep application services stopped for the MQ suite, whose
+Dispatcher must not claim unrelated Outbox rows:
+
+```bash
+uv run --locked pytest -q
+
+RUN_POSTGRES_INTEGRATION=1 uv run --locked pytest -q \
+  tests/integration/test_investigation_workflow_acceptance.py \
+  tests/integration/test_investigation_human_review_postgres.py \
+  tests/integration/test_investigation_url_reuse_postgres.py \
+  tests/integration/test_investigation_checkpoint_persistence.py
+
+RUN_POSTGRES_INTEGRATION=1 RUN_RABBITMQ_INTEGRATION=1 \
+  uv run --locked pytest -q tests/integration/test_worker_graph_source_e2e.py
+```
+
+No paid API switch is required. The combined closure tests are supplied and have
+not been executed by the assistant or confirmed by the maintainer yet. M5
+closure requires these checks and the reviewed PR/green CI/squash-merge workflow;
+supplying tests or passing lint alone does not close the milestone.
+
+V1 remains URL submission followed by progress/review/report readback. Existing
+knowledge, checkpoints and stored results serve their separate reuse purposes.
+A separate curated project-memory subsystem and free-form conversation are not
+M5 closure requirements. Reconsider them after representative report evaluation
+demonstrates a concrete retrieval or reuse gap.
 
 ### Repository retrieval evaluation
 
@@ -980,16 +1038,17 @@ not a product report viewer or file-export endpoint.
 ## Current milestone and contribution workflow
 
 M4 backend integration is merged through PR #14 with maintainer-confirmed local,
-infrastructure and paid acceptance. M5 checkpoint recovery and URL reuse are
-merged in PRs #15–#16. The maintainer confirmed on-demand human-review local
-tests passed and services restarted. Its PR review, CI and merge remain pending.
-Trusted memory remains later M5 work.
+infrastructure and paid acceptance. M5 checkpoint recovery, URL reuse and human
+review are merged in PRs #15–#17, with prior local acceptance confirmed.
+M5 is in [combined workflow closure acceptance](#workflow-closure-acceptance),
+not yet marked complete. Project memory is deferred pending demonstrated value;
+continuous conversation is outside the current V1 workflow.
 The assistant has not independently executed these acceptance suites or observed
 CI for the current feature. Before changes, review `docs/ARCHITECTURE.md`, source
 and relevant tests. M6 covers release reliability, representative report
 evaluation, UI and a Chinese README; V2 adds private repository authorization.
 
-Use `feat/**` / `fix/**` / `docs/**` branches and reviewed squash-merge PRs; do not push to `main` directly. Before merging run Ruff, default pytest, appropriate opt-in integration tests and GitHub CI. Clearly label which integration levels actually ran. See [Roadmap](docs/ROADMAP.md) for milestones and [ADR](docs/ADR/) for established technical decisions.
+Use focused feature, fix, documentation or test branches and reviewed squash-merge PRs; do not push to `main` directly. Before merging run Ruff, default pytest, appropriate opt-in integration tests and GitHub CI. Clearly label which integration levels actually ran. See [Roadmap](docs/ROADMAP.md) for milestones and [ADR](docs/ADR/) for established technical decisions.
 
 ## Security and operational scope
 

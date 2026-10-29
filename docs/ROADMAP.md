@@ -1,10 +1,10 @@
 # MaintainerLens Roadmap
 
-> Updated 2026-10-29. M4 backend integration is merged through PR #14; the maintainer confirmed regressions, real-infrastructure checks, the automatic paid smoke and the CI fix. M5 checkpoint/recovery is merged in PR #15 with maintainer-confirmed acceptance. URL resolution/reuse, controlled recovery, scoped freshness and progress/error readback are merged in PR #16; the maintainer reports local tests passed and services started, and Git contains squash merge PR #16. On-demand human review has maintainer-confirmed local tests and service restart; PR review, CI and merge remain pending.
+> Updated 2026-10-29. M4 backend integration is merged through PR #14 with maintainer-confirmed regression/infrastructure/paid acceptance. M5 checkpoint/recovery, URL reuse and on-demand review are merged in PRs #15–#17 with prior local acceptance confirmed; Git merge history is verified, without an independent CI query. Combined workflow closure tests are supplied and await execution. Project memory is deferred and is not an M5 completion requirement.
 
 ## Product vision
 
-MaintainerLens is an evidence-driven, server-side investigation platform for maintainers of public GitHub repositories. It joins source/documentation and Issue/PR history knowledge with a reliable asynchronous backend, LangGraph reasoning, validated citations, and ultimately human oversight and memory. V1 is read-only on **public** repositories; private authorization, multi-tenant isolation, and authorized write actions belong to V2. It is not a coding-editor replacement or automated patch author.
+MaintainerLens is an evidence-driven, server-side investigation platform for maintainers of public GitHub repositories. It joins source/documentation and Issue/PR history knowledge with a reliable asynchronous backend, LangGraph reasoning, validated citations, recoverable execution and on-demand human oversight. V1 focuses on Issue URL submission and report readback. Cross-investigation curated memory is optional future work. V1 is read-only on **public** repositories; private authorization, multi-tenant isolation, and authorized write actions belong to V2. It is not a coding-editor replacement or automated patch author.
 
 ## Milestone status
 
@@ -15,7 +15,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
 | M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
 | M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | Completed/merged through PR #14; maintainer-confirmed regression/infrastructure/paid acceptance; broader report-quality evaluation remains M6 |
-| M5 | Workflow checkpoints, state recovery, durable memory, HITL | In progress — checkpoint/recovery and URL reuse merged; human review locally accepted, PR/CI pending; memory pending |
+| M5 | Workflow checkpoints, state recovery, URL reuse and on-demand human review | Closure acceptance — features merged through #17; combined fault tests supplied, execution and closure PR/CI pending |
 | M6 | V1 release readiness, evaluation, security, Web UI | Planned |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
 
@@ -229,7 +229,7 @@ release acceptance concern; citation validity is not proof of correctness.
 - [x] Maintainer reports local tests passed and application services started after the migration/testing workflow. The assistant did not execute these checks.
 - [x] Git contains URL reuse squash merge PR #16. No independent CI observation is claimed here.
 
-### Later rounds: on-demand human decisions and trusted memory
+### Rounds 4–5: on-demand human decisions — merged in PR #17
 
 - [x] Rounds 4–5 implementation: persist typed review requests and immutable
   decisions; release claim/lease while waiting; resume through transactional Outbox.
@@ -239,13 +239,36 @@ release acceptance concern; citation validity is not proof of correctness.
   analysis generation limits trigger review. Invalid JSON/citations, ownership,
   Graph/tool deadlines and provider hard limits retain their boundaries.
 - [x] Maintainer confirmed local tests passed and application services restarted after the migration/acceptance workflow. The assistant did not execute these checks.
-- [ ] Reviewed human-review PR, observed green CI and squash merge.
-- [ ] Round 6: trusted evidence-linked memory, applicable revisions, revalidation,
-  revocation/retention and retrieval controls; no unverified guesses as facts.
-- [ ] Round 7: recovery/review/memory fault acceptance and documentation closure.
+- [x] Git contains human-review squash merge PR #17; independent CI inspection is not claimed.
+
+### Final round: combined workflow acceptance — implementation supplied, execution pending
+
+- [x] Supply opt-in real-PostgreSQL/API/compiled-Graph tests for approval followed
+  by failed-task recovery, accepted-result commit/status interruption, and
+  historical report retention when a newer investigation is rejected.
+- [x] Preserve the original Runner and existing schema; no extra migration,
+  status machine, project-memory pipeline or chat endpoint is introduced.
+- [x] Document test layers, commands, remaining report-quality limits and the
+  accepted deferral of curated project memory.
+- [ ] Maintainer executes default regression, combined PostgreSQL acceptance
+  and the existing real RabbitMQ/default Worker suite with simulated providers.
+- [ ] Reviewed closure PR, green CI and squash merge. Only then mark M5 complete.
 
 Chat Completions still receives explicit bounded context. Persisting Graph state
 is not automatic LLM memory, a new Task status machine or exactly-once messaging.
+
+### Deferred: curated project memory and conversational follow-up
+
+Source/History RAG already retain upstream materials, checkpoints retain one
+Task's execution, and stored investigation results support report reuse.
+Curated cross-Issue conclusions could reduce repeated investigation, but that
+incremental benefit has not been demonstrated. Do not build another persistence
+subsystem merely to meet the former milestone list. Reconsider it after M6
+evaluation identifies a concrete gap that retrieval or existing-result reuse
+cannot address. Any future design needs evidence, revision applicability,
+revalidation and revocation; human acceptance of a partial report is not factual
+certification or automatic admission to memory. Conversational follow-up is also
+deferred; it is not required for the URL-to-report V1 workflow.
 
 ## M6 — V1 release readiness — Planned
 

@@ -1,6 +1,7 @@
 # On-demand investigation review and approved budget versions
 
-Status: Accepted design; maintainer-confirmed local tests and service restart. PR review, CI and merge pending.
+Status: Accepted; merged in PR #17, with maintainer-confirmed local tests and
+service restart. Git merge history verified; CI not independently inspected.
 Date: 2026-10-29.
 
 ## Context
@@ -73,3 +74,11 @@ Validation is supplied as offline schema/API/real-Graph tests, opt-in PostgreSQL
 transaction/lease/idempotency races, and actual API→Outbox→RabbitMQ→default Worker
 scenarios with simulated providers. The assistant does not execute migrations,
 pytest or paid provider calls. See README for manual acceptance commands.
+
+Combined workflow closure acceptance is supplied separately for approved-budget
+user recovery, interruption between accepted-result commit and task success,
+and historical report retention after a newer Task is rejected. These additional
+tests await execution; their presence does not certify the combined behavior.
+The separate project-memory proposal is deferred and is not a prerequisite for
+this review workflow or M5 closure. Accepting a partial analysis does not certify
+it as a reusable project fact.

@@ -19,11 +19,15 @@ Keep context, decisions and consequences here. Development branch names, test-se
 
 | [2026-10-29-url-resolution-and-delivery-generations.md](2026-10-29-url-resolution-and-delivery-generations.md) | Accepted | URL arbitration, scoped freshness, generation-fenced user recovery and progress/error readback |
 
-| [2026-10-29-on-demand-investigation-review.md](2026-10-29-on-demand-investigation-review.md) | Accepted; local acceptance confirmed, PR/CI pending | Soft-budget review, lease-free waiting and idempotent approved resume |
+| [2026-10-29-on-demand-investigation-review.md](2026-10-29-on-demand-investigation-review.md) | Accepted; merged in #17 | Soft-budget review, lease-free waiting and idempotent approved resume |
 
 The Worker supports automatic preparation, explicit knowledge selection and
 checkpoint recovery. M4 is merged through PR #14 and checkpoint recovery through
 PR #15 with maintainer-confirmed tests. The maintainer reports URL reuse/progress local tests passed and services started;
-Git contains squash merge PR #16. Human-review local tests and service restart were confirmed by the maintainer; PR review, CI and merge remain pending. The original Runner, task status, claim fencing
-and ACK semantics remain authoritative. Human review is the current extension; trusted memory and private access
-remain future work.
+Git contains squash merges #16 and #17. Human-review local tests and service
+restart were confirmed by the maintainer; CI was not independently inspected.
+The original Runner, task status, claim fencing and ACK semantics remain
+authoritative. Combined recovery/review/report closure acceptance is supplied
+and awaits execution. Curated project memory and conversational follow-up are
+deferred, rather than prerequisites for M5 completion. Private access remains
+future work.
