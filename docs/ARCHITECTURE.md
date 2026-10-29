@@ -371,7 +371,9 @@ partial test index is excluded from automatic reuse by its unique chunker versio
 app, not a separately deployed HTTP server. Supplying tests is not evidence they
 passed. M4 is merged in PR #14; broad semantic quality remains a release acceptance concern.
 Checkpoint recovery is merged in PR #15 with maintainer-confirmed acceptance, as described below.
-On-demand review below has maintainer-confirmed local acceptance, with PR/CI pending; cross-run memory, monetary budgets and private access remain future work;
+On-demand review below is merged in PR #17 with maintainer-confirmed local
+acceptance. Combined workflow closure acceptance is pending; curated cross-run
+memory is deferred, and monetary budgets and private access remain future work;
 none replace the task lifecycle.
 
 ### Automatic URL intake and knowledge preparation
@@ -488,7 +490,9 @@ sampleproject Issue #225 from URL-only submission, used three rounds and returne
 and `stop`/`tool_calls` completions. The assistant did not independently run these
 tests. Git contains the M4 squash merge in PR #14; the maintainer reported the CI
 fix resolved. Valid provenance is not semantic fact verification. M5 adds recovery
-as a separate boundary below; human review has maintainer-confirmed local acceptance, while memory and the M6 product UI remain pending.
+as a separate boundary below; human review is merged in PR #17 with
+maintainer-confirmed local acceptance. Curated project memory is deferred;
+the product Web UI remains M6 work.
 
 
 ## Durable Graph execution and recovery
@@ -645,7 +649,9 @@ Task generation/recoverability/freshness fields and Outbox generation. Stop old
 processes, manually migrate, and restart matching API/Dispatcher/Worker code;
 older Workers do not understand nonzero-generation messages. Downgrade refuses
 when recovery generations exist rather than discard their delivery semantics.
-The URL slice alone added no review state. Review is the separate extension below; notification transport, product frontend and memory remain future work.
+The URL slice alone added no review state. Review is the separate extension
+below; notification transport and the product frontend remain future work.
+Curated cross-investigation memory is deferred.
 
 Acceptance uses offline resolution/Graph/API/error contracts, real PostgreSQL
 concurrency/expiry/rollback/generation tests and actual API→Outbox→MQ→default
@@ -698,4 +704,53 @@ Registered model `InvestigationReview`, Alembic `1bc6f8a0d417`, typed API
 `/{task_id}/reviews` and `/{task_id}/reviews/{review_id}/decision` provide the
 persistent boundary. The migration backfills user recoveries from old delivery
 generations and refuses destructive downgrade. Supplied offline/PG/MQ tests
-passed per maintainer feedback, with application services restarted. The assistant did not run those suites; reviewed PR/CI/merge remain pending. See [manual commands](../README.md#on-demand-human-review).
+passed per maintainer feedback, with application services restarted. Git contains
+squash merge PR #17. The assistant did not run those suites or independently
+inspect CI. See [manual commands](../README.md#on-demand-human-review).
+
+## Combined workflow acceptance and reuse boundaries
+
+M5 closure validates composition of the existing mechanisms rather than adding
+another persistence layer. The new
+[workflow acceptance suite](../tests/integration/test_investigation_workflow_acceptance.py)
+uses real PostgreSQL transactions, HTTP routes, the original Runner/Processor
+and compiled checkpointed Graph with deterministic follow-up. GitHub, analysis,
+knowledge preparation and retrieval are simulated. A test-owned ready index
+supplies identity metadata; it is not an actual source-index build. Default
+Worker/tool selection and broker delivery remain covered by the existing
+[Source E2E suite](../tests/integration/test_worker_graph_source_e2e.py).
+
+| Combined boundary | Acceptance expectation |
+| --- | --- |
+| Approved budget → transient failure → URL recovery | Latest approval remains applicable to the later generation; frozen Run and Task intent stay unchanged; user recovery and budget counters each advance only for their own action |
+| Delayed delivery after either kind of resume | Old generation cannot acquire the current claim or call dependencies |
+| Accepted analysis → result commit → interruption before success | Result presence is not completion; both detail and URL readback hide it while running; after lease expiry the same approval can be redelivered without another model/retrieval/preparation call |
+| Earlier completed analysis versus later retrieval | Accepted findings retain the last actual analysis context; later retrieved evidence is returned without being represented as analyzed |
+| New revision → new Task → waiting/rejection | Earlier successful report remains separately readable as historical; the new Task exposes its own waiting/rejection reason and no successful result |
+| Replayed human command | The original decision/target remains immutable; conflicting commands cannot dispatch work or consume quota |
+
+The tests emulate process interruption with external cancellation and advance
+only their own Task lease to simulate expiry. They do not kill a deployed
+process or prove exactly-once network calls. Queued Outbox generations are
+inspected in SQL; the separate MQ suite proves delivery/ACK assembly. New tests
+are supplied, not yet executed or maintainer-confirmed. M5 remains in closure
+acceptance until manual checks and the reviewed PR/CI/merge workflow finish.
+Commands are in [README](../README.md#workflow-closure-acceptance).
+
+Persistence has distinct reuse scopes:
+
+| Storage | Scope and purpose |
+| --- | --- |
+| Source RAG | Repository/commit/embedding identity; raw source and documentation evidence |
+| History RAG | Repository/GitHub object identity; Issues, PRs and comments |
+| Frozen Run/checkpoints | One Task; immutable execution identity and resumable Graph progress |
+| Investigation result/URL lookup | Complete cited analysis and report; same-Issue reuse with scoped metadata freshness |
+| Curated project memory | Not implemented; optional derived conclusions reused across different Issues, requiring applicability and revalidation |
+
+The accepted V1 interaction remains Issue URL → asynchronous investigation →
+progress/review/report readback. Neither conversational follow-up nor curated
+project memory is an M5 closure requirement. Existing report acceptance is not
+fact certification and does not create project knowledge. Representative M6
+report evaluation should identify a concrete reuse gap before a new memory
+subsystem is considered; citation validity alone still does not establish
+semantic correctness.
