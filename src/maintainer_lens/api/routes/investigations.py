@@ -17,6 +17,7 @@ from maintainer_lens.db.investigation_progress import (
     read_task_events,
 )
 from maintainer_lens.db.investigation_queries import (
+    find_investigation_tasks,
     get_investigation_details,
 )
 from maintainer_lens.db.investigation_results import (
@@ -31,6 +32,8 @@ from maintainer_lens.schemas.investigation_api import (
     CreateInvestigationRequest,
     CreateInvestigationResponse,
     InvestigationDetailResponse,
+    InvestigationLookupPage,
+    InvestigationTaskSummary,
     IssueSnapshotResponse,
 )
 from maintainer_lens.schemas.investigation_budget import (
@@ -136,6 +139,52 @@ async def create_investigation_from_url(
 async def get_knowledge_budget_profiles() -> list[KnowledgePreparationBudget]:
     """Describe preparation limits without loading settings or opening resources."""
     return list_knowledge_budget_profiles()
+
+
+@router.get(
+    "/lookup",
+    response_model=InvestigationLookupPage,
+)
+async def lookup_investigations(
+    issue_url: Annotated[str, Query(max_length=2048)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    before: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> InvestigationLookupPage:
+    """Locate existing tasks without GitHub calls, freshness checks or dispatch."""
+    try:
+        identity = parse_issue_url(issue_url)
+        if identity.issue_number > 2_147_483_647:
+            raise ValueError("Issue number exceeds the task storage range")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid GitHub Issue URL") from exc
+    try:
+        tasks, next_before = await find_investigation_tasks(
+            session,
+            repository=identity.repository,
+            issue_number=identity.issue_number,
+            before=before,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Invalid investigation page"
+        ) from exc
+    return InvestigationLookupPage(
+        repository=identity.repository,
+        issue_number=identity.issue_number,
+        tasks=[
+            InvestigationTaskSummary(
+                task_id=task.id,
+                status=task.status,
+                generation=task.execution_generation,
+                created_at=task.created_at,
+                updated_at=task.updated_at,
+            )
+            for task in tasks
+        ],
+        next_before=next_before,
+    )
 
 
 @router.get(

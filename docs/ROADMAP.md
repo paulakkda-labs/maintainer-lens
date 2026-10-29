@@ -1,6 +1,6 @@
 # MaintainerLens Roadmap
 
-> Updated 2026-10-29. M4 backend integration is merged through PR #14 with maintainer-confirmed regression/infrastructure/paid acceptance. M5 checkpoint/recovery, URL reuse and on-demand review are merged in PRs #15–#17 with prior local acceptance confirmed; Git merge history is verified, without an independent CI query. Combined workflow closure tests are supplied and await execution. Project memory is deferred and is not an M5 completion requirement.
+> Updated 2026-10-29. M4 is merged through PR #14. M5 features and combined closure are merged through PR #18 with maintainer-confirmed tests and service restart; local Git history is verified, without an independent CI query. M6 offline checks and one cached deployment case passed per maintainer feedback. Other cases, final human semantic review and the current PR/CI remain pending. Project memory remains deferred.
 
 ## Product vision
 
@@ -15,8 +15,8 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
 | M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
 | M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | Completed/merged through PR #14; maintainer-confirmed regression/infrastructure/paid acceptance; broader report-quality evaluation remains M6 |
-| M5 | Workflow checkpoints, state recovery, URL reuse and on-demand human review | Closure acceptance — features merged through #17; combined fault tests supplied, execution and closure PR/CI pending |
-| M6 | V1 release readiness, evaluation, security, Web UI | Planned |
+| M5 | Workflow checkpoints, state recovery, URL reuse and on-demand human review | Completed/merged through #18; maintainer-confirmed combined acceptance and service restart |
+| M6 | V1 release readiness, evaluation, security, Web UI | In progress — focused report regressions and selected deployment cases passed; same-branch troubleshooting acceptance and final semantic assessment pending |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
 
 **Definition of done:** Implementation + meaningful tests + any required real external verification + project docs + reviewed PR/green CI + squash merge. An isolated unit test success is not proof that the feature is running in the production Worker.
@@ -241,7 +241,7 @@ release acceptance concern; citation validity is not proof of correctness.
 - [x] Maintainer confirmed local tests passed and application services restarted after the migration/acceptance workflow. The assistant did not execute these checks.
 - [x] Git contains human-review squash merge PR #17; independent CI inspection is not claimed.
 
-### Final round: combined workflow acceptance — implementation supplied, execution pending
+### Final round: combined workflow acceptance — merged in PR #18
 
 - [x] Supply opt-in real-PostgreSQL/API/compiled-Graph tests for approval followed
   by failed-task recovery, accepted-result commit/status interruption, and
@@ -250,9 +250,9 @@ release acceptance concern; citation validity is not proof of correctness.
   status machine, project-memory pipeline or chat endpoint is introduced.
 - [x] Document test layers, commands, remaining report-quality limits and the
   accepted deferral of curated project memory.
-- [ ] Maintainer executes default regression, combined PostgreSQL acceptance
+- [x] Maintainer confirmed default regression, combined PostgreSQL acceptance
   and the existing real RabbitMQ/default Worker suite with simulated providers.
-- [ ] Reviewed closure PR, green CI and squash merge. Only then mark M5 complete.
+- [x] Git contains closure squash merge PR #18; CI was not independently queried by the assistant.
 
 Chat Completions still receives explicit bounded context. Persisting Graph state
 is not automatic LLM memory, a new Task status machine or exactly-once messaging.
@@ -270,7 +270,63 @@ revalidation and revocation; human acceptance of a partial report is not factual
 certification or automatic admission to memory. Conversational follow-up is also
 deferred; it is not required for the URL-to-report V1 workflow.
 
-## M6 — V1 release readiness — Planned
+## M6 — V1 release readiness — In progress
+
+### First slice: report review and deployed HTTP acceptance
+
+- [x] Supply three curated public-Issue review prompts from one small repository,
+  with explicit unsupported-claim checks and no fixed expected model answer.
+- [x] Supply pure saved-context observations using existing provenance/report
+  validators, with offline regression tests and no semantic accuracy score.
+- [x] Supply opt-in HTTP-only local deployment acceptance with services running,
+  default single-case small preparation and local review artifacts; no SQL/MQ
+  manipulation, automatic approval or cleanup of persistent tasks.
+- [x] Document language/file support levels and unsupported suffixes in README
+  and a public support matrix; language registration is not quality validation.
+- [x] Maintainer confirmed offline evaluation/protocol checks and the default
+  single cached deployment case passed; this is not a cold-run claim.
+- [x] Execute the other two selected deployment cases: CLI passed, closed-Issue
+  analysis failed on a model finding with an empty citation array.
+- [ ] Human reviewers assess each selected report's claims, relevance, versions,
+  uncertainty and next action; record provider costs separately from HTTP latency.
+- [x] Record initial assistant-assisted review gaps: an unsupported execution
+  inference and a relevant classifier omitted from the actual analysis excerpt.
+- [x] Implement a focused v2 context/prompt correction and supply real-Graph,
+  provider-payload and version-change regressions. Preserve History/Graph/output
+  budgets, existing storage formats and old reports.
+- [x] Maintainer confirmed v2 correction tests passed; no new counts or exact
+  suite scope were provided, so broader infrastructure acceptance is not inferred.
+- [x] Maintainer updated the deployment and passed the selected new-investigation
+  v2 case with existing Source knowledge; saved-context review confirmed both
+  targeted improvements. No empty-database cold-run or broad accuracy claim.
+- [x] Diagnose the closed-Issue contract failure from saved checkpoint writes
+  and supply v3 schema/empty-findings guidance with regressions. Preserve strict
+  finding references, historical records and the existing retry policy.
+- [x] Maintainer passed the focused v3 closed-Issue deployed recheck; saved-context
+  review confirmed valid empty findings, declared gaps and closure/repair separation.
+  Existing knowledge was reused; this is not a cold-build or general accuracy claim.
+- [x] Maintainer confirmed the focused v3 offline regression files passed;
+  no additional counts, broader integration or CI result is inferred.
+- [ ] Final human semantic approval of the remaining reports is pending;
+  citation precision and weak History relevance remain improvement notes.
+- [ ] Reviewed PR/CI/merge of this first slice.
+
+### Same-branch extension: focused troubleshooting
+
+- [x] Supply read-only Issue URL task history lookup with bounded keyset pages,
+  reusing existing detail/events endpoints without submission or freshness I/O.
+- [x] Supply delivery-scoped safe diagnostics and committed phase/lifecycle logs;
+  preserve cancellation, claim fencing, error classification and finite retries.
+- [x] Configure bounded application container log rotation and document export,
+  recreation limits and existing API safety boundaries.
+- [x] Supply offline concurrency/privacy/lifecycle/API regressions and isolated
+  opt-in PostgreSQL lookup acceptance, without schema migrations or paid calls.
+- [x] Maintainer reported the troubleshooting tests passed; no exact suite scope
+  or additional count was supplied, and assistant execution is not implied.
+- [ ] Confirm deployed read-only lookup/events and container log settings;
+  no new deployment result has been reported for this extension.
+
+### Remaining release work
 
 - [ ] Representative, multi-source Issue+PR/source retrieval and Agent report evaluation, regression metrics and limits.
 - [ ] Observability, task retries/lease recovery, security reviews, API safety boundaries and cost monitoring.

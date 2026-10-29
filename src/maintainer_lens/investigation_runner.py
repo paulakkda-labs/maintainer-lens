@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from maintainer_lens.core.investigation_logging import log_investigation_event
 from maintainer_lens.db.investigation_tasks import (
     claim_investigation_task,
     mark_investigation_failed,
@@ -206,6 +207,10 @@ async def execute_investigation_task(
             "Investigation task cannot be claimed."
         )
 
+    log_investigation_event(
+        "claim_committed", task_id=task_id, generation=expected_generation
+    )
+
     processing_error: (
         RetryableInvestigationError | PermanentInvestigationError | None
     ) = None
@@ -223,6 +228,15 @@ async def execute_investigation_task(
             review_context = exc.context
         except Exception as exc:
             processing_error = _classify_processing_error(exc)
+            # Log before status persistence so a later DB error cannot hide the
+            # processor failure. No exception text, input values or locals escape.
+            log_investigation_event(
+                "processor_failed",
+                task_id=task_id,
+                generation=expected_generation,
+                error=exc,
+                retryable=isinstance(processing_error, RetryableInvestigationError),
+            )
             if event_recorder is not None:
                 from maintainer_lens.services.investigation_progress import (
                     describe_failure,
@@ -237,12 +251,21 @@ async def execute_investigation_task(
                         update={"not_before": processing_error.not_before}
                     )
 
-    await run_investigation_with_lease(
-        session_factory=session_factory,
-        task_id=task_id,
-        claim_token=claim_token,
-        processor=guarded_processor,
-    )
+    try:
+        await run_investigation_with_lease(
+            session_factory=session_factory,
+            task_id=task_id,
+            claim_token=claim_token,
+            processor=guarded_processor,
+        )
+    except BaseException as exc:
+        log_investigation_event(
+            "execution_interrupted",
+            task_id=task_id,
+            generation=expected_generation,
+            error=exc,
+        )
+        raise
 
     if review_context is not None:
         from maintainer_lens.db.investigation_review import suspend_task_for_review
@@ -254,6 +277,12 @@ async def execute_investigation_task(
                 claim_token=claim_token,
                 context=review_context,
             )
+        log_investigation_event(
+            "review_committed",
+            task_id=task_id,
+            generation=expected_generation,
+            phase="waiting_review",
+        )
         return
 
     if processing_error is not None:
@@ -290,6 +319,14 @@ async def execute_investigation_task(
                     raise LeaseLostError(
                         f"Cannot update investigation with an invalid lease: {task_id}"
                     )
+        log_investigation_event(
+            "failure_committed"
+            if final_attempt
+            or isinstance(processing_error, PermanentInvestigationError)
+            else "retry_committed",
+            task_id=task_id,
+            generation=expected_generation,
+        )
         raise processing_error
 
     async with session_factory() as session:
@@ -311,4 +348,9 @@ async def execute_investigation_task(
                 raise LeaseLostError(
                     f"Cannot complete investigation with an invalid lease: {task_id}"
                 )
-    logger.info("Investigation task succeeded: task_id=%s", task_id)
+    log_investigation_event(
+        "completion_committed",
+        task_id=task_id,
+        generation=expected_generation,
+        phase="completed",
+    )

@@ -355,6 +355,53 @@ async def test_model_change_starts_new_task_without_rewriting_frozen_run(memory)
     assert result.freshness.reason_code == "execution_changed"
 
 
+@pytest.mark.parametrize("previous_version", ["investigation-v1", "investigation-v2"])
+async def test_analysis_version_change_keeps_old_report_and_queues_a_new_task(
+    memory, previous_version
+):
+    memory.seed()
+    record = memory.records[(InvestigationGraphRun, "original")]
+    original_request = _request()
+    previous_execution = _config(graph_version=previous_version)
+    record.execution_payload = previous_execution.model_dump(mode="json")
+    record.fingerprint = execution_fingerprint(original_request, previous_execution)
+    previous_fingerprint = record.fingerprint
+
+    result = await _resolve(memory)
+
+    assert _config().graph_version == "investigation-v3"
+    assert result.decision == "created" and result.task_id != "original"
+    assert result.previous_task_id == result.report_task_id == "original"
+    assert result.freshness.reason_code == "execution_changed"
+    assert result.report_markdown and len(memory.outbox) == 1
+    assert record.execution_payload["graph_version"] == previous_version
+    assert record.fingerprint == previous_fingerprint
+    assert record.request_payload == original_request.model_dump(mode="json")
+
+
+async def test_analysis_version_change_queues_new_work_after_permanent_output_failure(
+    memory,
+):
+    task = memory.seed(status="failed", retryable=False)
+    del memory.records[(InvestigationResultRecord, task.id)]
+    record = memory.records[(InvestigationGraphRun, task.id)]
+    previous_execution = _config(graph_version="investigation-v2")
+    record.execution_payload = previous_execution.model_dump(mode="json")
+    record.fingerprint = execution_fingerprint(_request(), previous_execution)
+    previous_fingerprint = record.fingerprint
+
+    result = await _resolve(memory)
+
+    assert result.decision == "created" and result.task_id != task.id
+    assert result.previous_task_id == task.id
+    assert result.report_task_id is None and result.report_markdown is None
+    assert result.freshness.reason_code == "execution_changed"
+    assert len(memory.outbox) == 1 and memory.outbox[0].generation == 0
+    assert task.status == "failed" and task.user_recovery_count == 0
+    assert record.fingerprint == previous_fingerprint
+    assert record.execution_payload == previous_execution.model_dump(mode="json")
+
+
 async def test_metadata_error_returns_old_report_with_unknown_freshness_and_safe_reason(
     memory,
 ):

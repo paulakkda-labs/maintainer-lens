@@ -11,6 +11,13 @@ x-app-build: &app-build
   context: .
   dockerfile: Dockerfile
 
+# Container-local retention, not a centralized or time-based log archive.
+x-app-logging: &app-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 # Non-secret execution identity must agree between URL resolution and the Worker.
 x-investigation-profile-env: &investigation-profile-env
   LLM_BASE_URL: ${LLM_BASE_URL:-}
@@ -107,6 +114,7 @@ services:
   migrate:
     build: *app-build
     image: maintainer-lens:dev
+    logging: *app-logging
     command: ["alembic", "upgrade", "head"]
     environment: *app-env
     depends_on:
@@ -117,6 +125,7 @@ services:
   api:
     build: *app-build
     image: maintainer-lens:dev
+    logging: *app-logging
     command: ["uvicorn", "maintainer_lens.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       <<: [*app-env, *investigation-profile-env]
@@ -147,6 +156,7 @@ services:
   dispatcher:
     build: *app-build
     image: maintainer-lens:dev
+    logging: *app-logging
     command: ["python", "-m", "maintainer_lens.outbox_dispatcher"]
     environment: *app-env
     restart: unless-stopped
@@ -155,6 +165,7 @@ services:
   worker:
     build: *app-build
     image: maintainer-lens:dev
+    logging: *app-logging
     command: ["python", "-m", "maintainer_lens.worker"]
     environment:
       <<: [*app-env, *investigation-profile-env]

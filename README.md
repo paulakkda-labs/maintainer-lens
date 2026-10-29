@@ -24,12 +24,40 @@ The lower-level repository/Issue/optional Source UUID endpoint remains available
 M4 integration, M5 checkpoints, URL reuse and on-demand review are merged through
 PRs #14–#17 with maintainer-confirmed local acceptance. The review feature's
 service restart was also confirmed; CI was not independently inspected here.
-Combined workflow closure acceptance is supplied below and awaits execution.
+Combined workflow closure acceptance passed per maintainer feedback and is
+merged in PR #18. M6 offline evaluation/protocol tests and one cached deployment
+check passed per maintainer feedback. Remaining deployed cases and final human
+report assessment are pending.
 Project memory, conversational follow-up and a product Web UI are not
 implemented. Broader semantic report-quality evaluation remains a release concern.
 
 [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [Architecture decisions](docs/ADR/README.md)
+
+## Source language and file coverage
+
+Source support has different levels; it does not imply universal repository
+coverage or equal report quality:
+
+| Level | Languages/formats | Recognized extensions |
+| --- | --- | --- |
+| Language-aware syntax boundaries | Python | `.py`, `.pyi` |
+| Language-aware syntax boundaries | JavaScript / TypeScript | `.js`, `.jsx`, `.ts`, `.tsx` |
+| Language-aware syntax boundaries | Go / Java | `.go`, `.java` |
+| Text windows, without dedicated syntax analysis | Rust / C / C++ / C# / Ruby / Shell | `.rs`, `.c`, `.h`, `.cpp`, `.hpp`, `.cs`, `.rb`, `.sh` |
+| Heading-aware document boundaries | Markdown | `.md` |
+| Text windows | HTML, CSS, MDX, RST, TXT and supported configuration files | See the complete allowlist below |
+
+The [complete support matrix](docs/SUPPORTED_LANGUAGES.md) lists document/config
+formats, special filenames and exclusions. Unknown suffixes are skipped;
+for example, PHP, Kotlin, Swift, Vue and Svelte source are not currently indexed.
+Only listed suffixes are recognized, so C++ support does not include `.cc` or
+`.cxx`. All eligible files remain subject to preparation/content/parser budgets.
+
+MaintainerLens does not compile or execute repository code or run its test
+suite. Syntax metadata is not full static analysis or a verified fix. History
+retrieval can operate independently of source language, but broad semantic
+report quality across languages has not been established.
 
 ## Architecture overview
 
@@ -148,8 +176,11 @@ still sent. A `length` finish reason remains a failure even if the returned text
 parses as JSON; no automatic retry is added.
 
 Output length is independent of repository size. Each analysis receives at most
-five History and five Source excerpts, with each evidence body limited to 1,600
-characters. Repository preparation budgets, retrieval coverage and Graph rounds
+five History and five Source excerpts. History bodies retain their 1,600-character
+limit. Source bodies use the automatic chunker's 4,000-character boundary, so
+normal indexed chunks are sent whole; oversized external/legacy chunks are
+explicitly marked as truncated. Tool-feedback snippets retain their separate
+limits. Repository preparation budgets, retrieval coverage and Graph rounds
 remain separate controls. The 4,096 default is an engineering choice for these
 preliminary reports, not a measured guarantee across repositories or a model's
 maximum. The configured provider/model must support the chosen output budget
@@ -250,6 +281,9 @@ reuses unchanged running containers and starts or recreates services as needed.
 | Inspect application logs | `docker compose logs -f api dispatcher worker` |
 | Inspect all logs | `docker compose logs -f` |
 | Check Compose syntax/configuration | `docker compose config -q` |
+
+For read-only Issue URL lookup, Task/Event correlation, safe Worker diagnostics
+and application log rotation/export, see [Investigation troubleshooting](docs/TROUBLESHOOTING.md).
 
 **Typical day-to-day workflow:** keep PostgreSQL, Redis, and RabbitMQ running
 while coding and executing integration tests; stop `api`, `dispatcher`, and
@@ -937,16 +971,98 @@ RUN_POSTGRES_INTEGRATION=1 RUN_RABBITMQ_INTEGRATION=1 \
   uv run --locked pytest -q tests/integration/test_worker_graph_source_e2e.py
 ```
 
-No paid API switch is required. The combined closure tests are supplied and have
-not been executed by the assistant or confirmed by the maintainer yet. M5
-closure requires these checks and the reviewed PR/green CI/squash-merge workflow;
-supplying tests or passing lint alone does not close the milestone.
+No paid API switch is required. The maintainer confirmed the combined closure
+tests and regressions passed and application services restarted. Git contains
+squash merge PR #18. The assistant did not execute those tests or independently
+inspect CI; this does not establish deployed black-box behavior or report accuracy.
 
 V1 remains URL submission followed by progress/review/report readback. Existing
 knowledge, checkpoints and stored results serve their separate reuse purposes.
 A separate curated project-memory subsystem and free-form conversation are not
 M5 closure requirements. Reconsider them after representative report evaluation
 demonstrates a concrete retrieval or reuse gap.
+
+### Deployed HTTP smoke and report quality
+
+This first M6 slice adds a small public-Issue review set and a separate test of
+an **already running** API/Dispatcher/Worker deployment. Keep application services
+running for this test. The stop-services instructions above apply to integration
+fixtures sharing Outbox storage, not this HTTP-only black-box check.
+
+Offline evaluation/protocol regressions require no services or paid calls:
+
+```bash
+uv run --locked pytest -q \
+  tests/evaluation/test_investigation_report_quality.py \
+  tests/integration/test_deployed_investigation_report_quality.py
+```
+
+Explicit local deployment acceptance, initially selecting one small-repository
+case, may incur real provider charges through the Worker:
+
+```bash
+RUN_DEPLOYED_REPORT_QUALITY=1 \
+REPORT_QUALITY_BASE_URL=http://127.0.0.1:8000 \
+REPORT_QUALITY_CASES=license-metadata \
+uv run --locked pytest -q -s \
+  tests/integration/test_deployed_investigation_report_quality.py::test_deployed_url_to_report_quality
+```
+
+Use your `API_HOST_PORT` if different. The test submits the existing `small`
+profile, polls status, checks structural result/citation validity and verifies
+current same-Task report reuse. It uses no direct database/broker access, starts
+no Worker and makes no approvals. Waiting/failure stops with diagnostics. The
+600-second client wait does not cancel server tasks; records remain available
+for reuse and are not erased by this test. Existing cached results are recorded
+as such and do not prove cold preparation. No migration is needed.
+
+Artifacts go to ignored `.local/report-quality/`: HTTP trace, successful Markdown
+and a pending human review form. Citation counts and elapsed HTTP time are not
+semantic accuracy or provider-cost measurements. No model keys are loaded by
+pytest; provider consumption must be checked separately. Start with one case.
+See [review cases, rubric and complete operating boundaries](docs/REPORT_QUALITY.md)
+before expanding the selection. The maintainer confirmed offline checks and one
+selected cached deployment check passed. Initial review identified an unsupported
+execution inference and a relevant-line excerpt gap. The targeted corrections
+have since passed selected deployment checks; final human semantic acceptance
+remains pending.
+
+The first focused analysis correction used Graph execution version `investigation-v2`:
+Source excerpts preserve normal indexed chunks, and the prompt distinguishes
+configuration/reported warnings from observed execution. The maintainer confirmed
+the correction tests and an updated-deployment case passed. Saved-context review
+confirmed both targeted improvements in that sample; final human and broader
+quality assessment remain pending. Prompt instructions alone
+do not certify model compliance. Old reports remain readable; a successful
+freshness check against a v1 Run queues a new investigation instead of treating
+the old execution as equivalent. v1 checkpoints are not silently resumed as v2.
+
+The subsequent CLI check passed; the closed-Issue case was rejected because a
+model finding had an empty citation array. The current `investigation-v3`
+correction supplies the local output JSON Schema to the model and explicitly
+directs unsupported observations to summary/questions with `findings: []`.
+Local validation remains strict: empty finding citations still fail and there
+is no automatic repair/retry. The selected v3 closed-Issue deployed recheck passed
+with an empty findings array and declared gaps. Its saved-context review confirmed
+that closure was not presented as a code fix; relevant-comment coverage and
+History relevance remain limited. The maintainer also confirmed the focused v3
+offline regressions passed; final human semantic acceptance remains pending.
+Earlier v1/v2 Runs remain historical rather than resuming under the new prompt.
+
+After offline acceptance, update API and Worker together so their execution
+identities match. The services share the application image; no Alembic upgrade
+is needed for this code version change:
+
+```bash
+docker compose stop api dispatcher worker
+docker compose build api
+docker compose up -d --no-deps --force-recreate api dispatcher worker
+```
+
+Then run the live command above with services running. A restart alone does not
+install the fix. Inspect the newly generated report's saved analysis context and
+claim wording; earlier v1/v2 successes do not validate v3 behavior. Start with
+`REPORT_QUALITY_CASES=misdirected-closed-issue` for this focused recheck.
 
 ### Repository retrieval evaluation
 
@@ -1040,8 +1156,15 @@ not a product report viewer or file-export endpoint.
 M4 backend integration is merged through PR #14 with maintainer-confirmed local,
 infrastructure and paid acceptance. M5 checkpoint recovery, URL reuse and human
 review are merged in PRs #15–#17, with prior local acceptance confirmed.
-M5 is in [combined workflow closure acceptance](#workflow-closure-acceptance),
-not yet marked complete. Project memory is deferred pending demonstrated value;
+M5 closure is merged in PR #18 with maintainer-confirmed acceptance. M6 begins
+with [deployed HTTP and report-quality acceptance](#deployed-http-smoke-and-report-quality),
+whose focused offline checks and three selected deployment cases passed across
+the documented analysis corrections, per maintainer feedback. Final human review
+is pending. The same feature branch also supplies a focused
+[troubleshooting boundary](docs/TROUBLESHOOTING.md): read-only URL history lookup,
+Task-correlated diagnostics and bounded application container logs. The maintainer
+reported its tests passed; separate deployment readback has not been reported.
+Project memory is deferred pending demonstrated value;
 continuous conversation is outside the current V1 workflow.
 The assistant has not independently executed these acceptance suites or observed
 CI for the current feature. Before changes, review `docs/ARCHITECTURE.md`, source

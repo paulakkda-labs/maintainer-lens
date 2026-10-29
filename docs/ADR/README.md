@@ -27,7 +27,9 @@ PR #15 with maintainer-confirmed tests. The maintainer reports URL reuse/progres
 Git contains squash merges #16 and #17. Human-review local tests and service
 restart were confirmed by the maintainer; CI was not independently inspected.
 The original Runner, task status, claim fencing and ACK semantics remain
-authoritative. Combined recovery/review/report closure acceptance is supplied
-and awaits execution. Curated project memory and conversational follow-up are
+authoritative. Combined recovery/review/report closure acceptance passed per
+maintainer feedback and is merged in PR #18. New M6 report-quality and deployed
+HTTP acceptance have maintainer-confirmed offline and single cached-case checks;
+remaining cases and final human review are pending. Curated project memory and conversational follow-up are
 deferred, rather than prerequisites for M5 completion. Private access remains
 future work.

@@ -38,6 +38,7 @@ localhost-bound development setup, not a hardened public deployment.
 | Durable Graph execution | [execution contract](../src/maintainer_lens/schemas/investigation_checkpoint.py), [resume service](../src/maintainer_lens/services/investigation_checkpoint_execution.py), [Saver](../src/maintainer_lens/agents/investigation/checkpointing.py), [SQL store](../src/maintainer_lens/db/investigation_checkpoints.py), [models](../src/maintainer_lens/db/models/investigation_checkpoint.py) | Frozen input/configuration, task-scoped checkpoints/pending writes and claim-fenced recovery |
 | URL reuse and freshness | [resolver](../src/maintainer_lens/services/investigation_url_reuse.py), [arbitration](../src/maintainer_lens/db/investigation_reuse.py), [metadata observation](../src/maintainer_lens/services/investigation_freshness.py), [shared execution profile](../src/maintainer_lens/services/investigation_configuration.py) | Resolve active/cached/recoverable/changed URL intent without mixing versions |
 | Progress and errors | [reporter](../src/maintainer_lens/services/investigation_progress.py), [event store](../src/maintainer_lens/db/investigation_progress.py), [event models](../src/maintainer_lens/db/models/investigation_reuse.py) | Claim-fenced phases, safe processing errors, delivery generation and paginated API history |
+| Troubleshooting | [diagnostic logging](../src/maintainer_lens/core/investigation_logging.py), [lookup query](../src/maintainer_lens/db/investigation_queries.py), [operations guide](TROUBLESHOOTING.md) | Read-only URL task history, delivery-scoped safe diagnostics and bounded local application logs |
 | Human review | [contracts](../src/maintainer_lens/schemas/investigation_review.py), [service](../src/maintainer_lens/services/investigation_review.py), [store](../src/maintainer_lens/db/investigation_review.py), [routes](../src/maintainer_lens/api/routes/investigation_reviews.py) | Claim-fenced pause, immutable budget decisions, idempotent Outbox resume and validated partial acceptance |
 | Source knowledge | [indexing](../src/maintainer_lens/services/repository_indexing.py), [search](../src/maintainer_lens/services/repository_search.py) | Commit-pinned indexes, build leases, exact semantic/optional keyword retrieval |
 | Investigation Source selection | [selection boundary](../src/maintainer_lens/services/investigation_source_index.py), [adapter](../src/maintainer_lens/agents/investigation/retrieval.py) | Validate an explicit or backend-selected UUID against repository, ready status and full embedding identity; return immutable metadata, without building or choosing latest |
@@ -46,6 +47,7 @@ localhost-bound development setup, not a hardened public deployment.
 | Human-readable report | [renderer](../src/maintainer_lens/services/investigation_report.py) | Pure Markdown derived from validated stored analysis and its actual citations |
 | Automatic intake/preparation | [URL contract](../src/maintainer_lens/schemas/investigation_url.py), [preparer](../src/maintainer_lens/services/investigation_preparation.py), [binding DB](../src/maintainer_lens/db/investigation_preparation.py), [Source spool](../src/maintainer_lens/services/repository_index_preparation.py) | URL identity, persisted limits, complete compatible index reuse/build and fenced prepared identity |
 | Knowledge budget | [contracts/presets](../src/maintainer_lens/schemas/investigation_budget.py), [submission](../src/maintainer_lens/services/investigation_submission.py) | Resolve profile once, persist immutable task intent snapshot, expose choices and stored limits without modifying Graph budgets |
+| Report evaluation | [review-set loader and observations](../src/maintainer_lens/evaluation/report_quality.py), [HTTP acceptance](../tests/integration/test_deployed_investigation_report_quality.py) | Pure validation/counts and opt-in deployed API checks; no task lifecycle, provider clients or automatic semantic certification |
 
 ## Execution flows
 
@@ -205,8 +207,11 @@ Initial History → optional Source → structured analysis
       needs_more_evidence → END
 ```
 
-Each analysis uses at most five History and five Source excerpts, bounded to
-1,600 content characters each. `analysis_evidence` saves the exact latest
+Each analysis uses at most five History and five Source excerpts. History
+content remains limited to 1,600 characters. Source content uses the chunker's
+4,000-character boundary, preserving complete normal indexed chunks and marking
+oversized external/legacy excerpts as truncated. Tool feedback remains separate.
+`analysis_evidence` saves the exact latest
 completed analysis context; skipped reanalysis retains that context, and initial
 empty retrieval records an empty context without a model call. Final validation checks
 request identity, required fields, structured analysis, terminal values, rounds,
@@ -372,7 +377,7 @@ app, not a separately deployed HTTP server. Supplying tests is not evidence they
 passed. M4 is merged in PR #14; broad semantic quality remains a release acceptance concern.
 Checkpoint recovery is merged in PR #15 with maintainer-confirmed acceptance, as described below.
 On-demand review below is merged in PR #17 with maintainer-confirmed local
-acceptance. Combined workflow closure acceptance is pending; curated cross-run
+acceptance. Combined workflow closure is merged in PR #18; curated cross-run
 memory is deferred, and monetary budgets and private access remain future work;
 none replace the task lifecycle.
 
@@ -569,10 +574,11 @@ cancels analysis and restarts the default Worker through real MQ redelivery.
 The maintainer confirmed the checkpoint acceptance suites passed; Git contains PR #15.
 The maintainer reports URL reuse/progress local tests passed and application services started; Git contains URL reuse squash merge PR #16. The assistant did not execute the acceptance suites.
 
-Human review is an on-demand extension described below, with maintainer-confirmed local acceptance and PR/CI pending. Normal reports do not
-require approval. Adjustable budget exhaustion may later preserve trusted
+Human review is an on-demand extension merged in PR #17, with
+maintainer-confirmed local acceptance. Normal reports do not
+require approval. Selected adjustable budget exhaustion preserves trusted
 progress for a human decision; it cannot authorize invalid JSON, citations,
-repository/index/claim boundaries or provider hard limits. Checkpoint storage itself introduces no review endpoints or waiting states; the extension below supplies those. Trusted long-term memory remains future work.
+repository/index/claim boundaries or provider hard limits. Checkpoint storage itself introduces no review endpoints or waiting states; the extension below supplies those. Curated project memory is deferred.
 
 
 ## Repeated URL resolution, freshness and progress
@@ -658,6 +664,37 @@ concurrency/expiry/rollback/generation tests and actual API→Outbox→MQ→defa
 Worker recovery with simulated HTTP. The maintainer confirmed local acceptance and Git contains PR #16. See
 [README commands](../README.md#url-reuse-and-progress-acceptance).
 
+### Read-only lookup and diagnostic logs
+
+GET `/investigations/lookup?issue_url=...` uses the existing strict GitHub Issue
+URL parser and SELECT-only Task history query, without URL arbitration, locks,
+freshness checks, submission or provider I/O. It includes all preparation modes
+and budget profiles for the case-insensitive repository/Issue identity. Pages
+use descending immutable `(created_at, id)` keysets, default 20 and maximum 100;
+`before` is a task ID scoped to that identity. Unknown Issues return an empty
+page and unknown/foreign cursors fail safely. Existing detail/events endpoints
+provide phases, errors and reports for the selected ID. No schema migration or
+new task state machine is introduced; page size does not guarantee query latency.
+
+The Worker binds a ContextVar delivery scope around the existing handler/Runner.
+Awaited descendants share that scope's last committed phase; concurrent
+deliveries have separate objects, and token reset survives failure/cancellation.
+The progress reporter logs only after its event transaction commits. The Runner
+logs original failure type, bounded code locations and allowlisted Pydantic
+paths before status persistence, then logs lifecycle outcomes after commit.
+It re-raises interruptions and preserves existing classification/retry semantics.
+Raw exception text, locals and provider/model content are excluded from these
+diagnostics; the API's existing safe error payloads remain unchanged. A last phase
+is not a distributed trace or a factual claim about parallel suboperations.
+
+Compose adds size-rotated `json-file` logs to application/migration containers.
+These are container-local, can be lost on recreation and are not centralized
+storage, a time-based retention guarantee or infrastructure HA. PostgreSQL
+events remain authoritative. See [troubleshooting and acceptance](TROUBLESHOOTING.md)
+for read/export commands and resource/retention limits. The maintainer reported
+the troubleshooting tests passed, without an exact suite scope/count. Separate
+deployment readback has not been reported; historical report-quality passes do
+not substitute for that operational check.
 
 ## On-demand human decisions
 
@@ -732,9 +769,9 @@ Worker/tool selection and broker delivery remain covered by the existing
 The tests emulate process interruption with external cancellation and advance
 only their own Task lease to simulate expiry. They do not kill a deployed
 process or prove exactly-once network calls. Queued Outbox generations are
-inspected in SQL; the separate MQ suite proves delivery/ACK assembly. New tests
-are supplied, not yet executed or maintainer-confirmed. M5 remains in closure
-acceptance until manual checks and the reviewed PR/CI/merge workflow finish.
+inspected in SQL; the separate MQ suite proves delivery/ACK assembly. The
+maintainer confirmed these tests passed and services restarted; Git contains
+the closure squash merge PR #18. The assistant did not execute pytest or query CI.
 Commands are in [README](../README.md#workflow-closure-acceptance).
 
 Persistence has distinct reuse scopes:
@@ -754,3 +791,57 @@ fact certification and does not create project knowledge. Representative M6
 report evaluation should identify a concrete reuse gap before a new memory
 subsystem is considered; citation validity alone still does not establish
 semantic correctness.
+
+## M6 report evaluation and deployed HTTP acceptance
+
+The [language support matrix](SUPPORTED_LANGUAGES.md) separates five registered
+syntax analyzers from text-window formats and skipped suffixes. Source allowlist
+recognition does not imply compilation, execution, complete language-version
+support or measured semantic report quality.
+
+The [report evaluation module](../src/maintainer_lens/evaluation/report_quality.py)
+is a pure loader/inspection boundary. It reuses deterministic report and citation
+validation, then counts retrieved, analyzed and cited evidence separately. It
+does not infer truth, reconstruct analysis context from rankings, issue provider
+requests or mutate task state. The [review set](../tests/fixtures/reports/sampleproject.json)
+contains human prompts, not fixed model answers or a multi-language benchmark.
+
+The new HTTP-only acceptance test connects to an existing loopback API with
+application services running. Only this path is exercised:
+
+```text
+pytest HTTP client → deployed API → deployed Outbox/Dispatcher/MQ/Worker
+                  ← public detail/events/review/reuse responses
+```
+
+It does not start an ASGI app, inject fake server dependencies, open SQL Sessions
+or manipulate the broker. Offline MockTransport tests validate the acceptance
+client's protocol separately. Live waiting/failure is diagnostic, not automatic
+approval. A client deadline stops waiting and leaves server work intact. Durable
+records remain; results, HTTP trace and pending human-review materials are
+exported locally. There is no new schema or migration.
+
+The maintainer confirmed offline evaluation/protocol tests and one cached
+deployment case passed. Final human semantic review remains pending.
+Initial excerpt-level review identified an unsupported execution
+inference and a relevant-line context gap. The focused v2 fix preserves bounded
+Source chunks and instructs analysis to separate configuration, reported claims
+and execution evidence. The maintainer confirmed the correction tests and one
+updated-deployment case passed. Saved-context review confirmed the classifier
+was visible and configuration was not asserted as an observed execution failure
+in that sample; broader semantic quality and final human approval remain pending.
+The subsequent CLI deployment check passed; the closed-Issue model response
+contained an empty citation array and was correctly rejected. Current
+`investigation-v3` adds the generated local JSON Schema and explicit
+empty-findings instructions to the prompt. Runtime validation and finite retry
+policy are unchanged. The maintainer passed the focused v3 deployed recheck;
+saved-context review confirmed empty findings and declared gaps without treating
+closure as proof of repair. The misdirection comment was absent from actual
+analysis context, and History relevance remains limited. The maintainer confirmed
+focused v3 offline regressions passed; final human semantic approval is pending.
+Execution versions are not checkpoint/result storage schema migrations. Old
+v1/v2 Runs remain immutable/readable, but cannot resume under v3; scoped URL checks
+create new work when execution identity changes, retaining historical reports.
+Three cases in one small Python sample repository
+do not establish general report accuracy. Exact provider usage/cost is not exposed
+by the current API. See [commands and review rubric](REPORT_QUALITY.md).

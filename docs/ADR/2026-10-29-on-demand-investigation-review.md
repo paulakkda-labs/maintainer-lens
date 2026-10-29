@@ -78,7 +78,9 @@ pytest or paid provider calls. See README for manual acceptance commands.
 Combined workflow closure acceptance is supplied separately for approved-budget
 user recovery, interruption between accepted-result commit and task success,
 and historical report retention after a newer Task is rejected. These additional
-tests await execution; their presence does not certify the combined behavior.
+tests passed per maintainer feedback and are merged in PR #18; the assistant
+did not execute them or independently inspect CI. Broader semantic report
+quality and deployed HTTP acceptance remain separate M6 concerns.
 The separate project-memory proposal is deferred and is not a prerequisite for
 this review workflow or M5 closure. Accepting a partial analysis does not certify
 it as a reusable project fact.
