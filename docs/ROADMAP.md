@@ -1,6 +1,6 @@
 # MaintainerLens Roadmap
 
-> Updated 2026-10-29. Worker/Source/tools/reports and budget contracts are merged in PR #13. The maintainer confirmed the earlier bounded Source+History smoke passed. URL-only intake, automatic preparation and fenced prepared-index binding are implemented on the follow-up branch; the maintainer confirmed local regressions/infrastructure checks and the automatic paid smoke passed. Report review and reviewed green CI/merge remain pending. Implementation does not imply deployment.
+> Updated 2026-10-29. M4 backend integration is merged through PR #14; the maintainer confirmed regressions, real-infrastructure checks, the automatic paid smoke and the CI fix. M5 checkpoint/recovery production code and tests are implemented on the current feature branch; migration and pytest acceptance have not been run by the assistant. Implementation does not imply deployment.
 
 ## Product vision
 
@@ -14,8 +14,8 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 | M1 | PostgreSQL, Redis, RabbitMQ, reliable Worker, CI | Completed/merged (historical) |
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
 | M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
-| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | **Review/merge pending** — Graph/results (#11) and Worker/Source/tools/report/budgets (#13) merged; URL intake/automatic preparation regressions and paid cold-start smoke maintainer-confirmed, report review and CI/merge pending |
-| M5 | Workflow checkpoints, state recovery, durable memory, HITL | Planned |
+| M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | Completed/merged through PR #14; maintainer-confirmed regression/infrastructure/paid acceptance; broader report-quality evaluation remains M6 |
+| M5 | Workflow checkpoints, state recovery, durable memory, HITL | In progress — checkpoint/recovery slice implemented, acceptance pending; review/memory pending |
 | M6 | V1 release readiness, evaluation, security, Web UI | Planned |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
 
@@ -186,7 +186,7 @@ query the current database revision/CI.
   and normal stop/tool_calls completions. The assistant did not execute the tests.
 - [ ] Inspect actual report statements against returned excerpts and immutable
   Source links; record limitations without treating valid citations as truth.
-- [ ] Reviewed PR, green CI, squash merge and synchronized main.
+- [x] Git contains squash merge PR #14; maintainer reported CI fix resolved and synchronized main before M5.
 
 Default preparation is 500 selected Source files, 8 MiB, 2,000 chunks, three
 History parents and 900 seconds. Unlimited applies only to preparation task
@@ -196,19 +196,39 @@ is added here.
 
 ### M4 closure and M5 entry
 
-The remaining M4 backend code can be reviewed as this one slice. M4 stays open
-until its new acceptance suites and focused report/citation review pass and the
-reviewed green-CI PR is merged. Then synchronize main before creating the M5
-branch. M5 owns durable Graph checkpoint/recovery and human review; PostgreSQL
-task ownership and RabbitMQ delivery semantics remain authoritative.
+M4 backend integration is merged through PR #14. Paid/infrastructure acceptance
+was confirmed by the maintainer, not independently executed by the assistant.
+Focused report review remains useful and representative semantic quality is a
+release acceptance concern; citation validity is not proof of correctness.
 
-## M5 — Durable workflow and human review — Planned
+## M5 — Durable workflow and human review — In progress
 
-- [ ] Define checkpoint storage and LangGraph `thread_id` usage linked to existing task identity, **without conflating** graph state with business status.
-- [ ] Resume after interruption; measure duplicate work when RabbitMQ redelivers and prevent unsafe duplicate effects.
-- [ ] Support human-in-the-loop interrupts, review, approvals, and explicit investigation corrections.
-- [ ] Persist trusted, evidence-linked long-term knowledge with provenance, change/retention policy, and controls; do not store unverified model guesses as facts.
-- [ ] Define trustworthy short-term investigation context and bounded prompt assembly; Chat Completions does not automatically preserve prior calls.
+### Rounds 1–3: checkpoint contract, storage and Worker recovery
+
+- [x] Implement stable Task-linked thread identity, immutable Issue/configuration,
+  code/SDK compatibility checks and three ORM tables with one Alembic migration.
+- [x] Implement async public Saver protocol over existing SQLAlchemy/asyncpg,
+  full typed snapshots/pending writes and fresh claim/lease fencing per operation.
+- [x] Wire sync durability and recovery into the default Worker under the existing
+  Runner; preserve saved rounds, segment deadline and existing delivery budgets.
+- [x] Supply complete offline, opt-in PostgreSQL and real MQ crash/redelivery tests;
+  document in-flight duplicate-call windows and result/status commit ordering.
+- [ ] Maintainer applies migration f9a4d6e8b205 and runs pytest acceptance.
+- [ ] Reviewed PR, observed green CI and squash merge.
+
+### Later rounds: on-demand human decisions and trusted memory
+
+- [ ] Rounds 4–5: persist pause/review intent and versioned decisions; release the
+  lease while waiting, and resume through transactional Outbox publication.
+- [ ] Normal reports remain automatic. Adjustable application-budget exhaustion
+  can trigger human intervention; truncated/invalid analysis, provenance and claim
+  boundaries or provider hard limits cannot be approved away.
+- [ ] Round 6: trusted evidence-linked memory, applicable revisions, revalidation,
+  revocation/retention and retrieval controls; no unverified guesses as facts.
+- [ ] Round 7: recovery/review/memory fault acceptance and documentation closure.
+
+Chat Completions still receives explicit bounded context. Persisting Graph state
+is not automatic LLM memory, a new Task status machine or exactly-once messaging.
 
 ## M6 — V1 release readiness — Planned
 
@@ -245,7 +265,9 @@ Public repository metadata checks now precede issue/history/comment/PR content
 requests. Provenance checks and self-issue exclusion do not establish that every
 model statement is entailed by its citations. Complete result evidence and actual analysis excerpts are now persisted, with
 a whole-Graph deadline and deterministic Markdown rendering. Automatic knowledge
-preparation/intake, monetary budgets, semantic fact verification and duplicate-computation mitigation remain future work.
+preparation/intake are implemented; checkpoint recovery reduces committed-node recomputation.
+Monetary budgets, broad semantic fact verification and elimination of all duplicate
+provider calls remain outside the current guarantees.
 No HNSW, reranker or replacement task status machine is planned without need.
 
 The source benchmark lives in `tests/fixtures/retrieval/sampleproject.json`;

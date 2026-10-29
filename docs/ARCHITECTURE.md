@@ -34,7 +34,8 @@ localhost-bound development setup, not a hardened public deployment.
 | Delivery | [Dispatcher](../src/maintainer_lens/services/outbox_dispatcher.py), [handler](../src/maintainer_lens/messaging/handler.py), [consumer](../src/maintainer_lens/messaging/consumer.py) | Confirmed publication, retry/dead-letter routing and ACK ownership |
 | Task lifecycle | [runner](../src/maintainer_lens/investigation_runner.py), [task DB](../src/maintainer_lens/db/investigation_tasks.py), [Worker](../src/maintainer_lens/worker.py) | Claim/lease/status, error classification and process resource assembly |
 | Snapshot and Graph processor | [Issue service](../src/maintainer_lens/services/issue_investigator.py), [processor](../src/maintainer_lens/services/investigation_processor.py) | Commit snapshot data; optionally compose Graph execution and result commit under an existing claim |
-| Graph | [application entry](../src/maintainer_lens/services/investigation_execution.py), [composer](../src/maintainer_lens/agents/investigation_graph.py), [node modules](../src/maintainer_lens/agents/investigation/) | Fresh State, deadline, retrieval/analysis/controlled follow-up and final validation |
+| Graph | [application entry](../src/maintainer_lens/services/investigation_execution.py), [composer](../src/maintainer_lens/agents/investigation_graph.py), [node modules](../src/maintainer_lens/agents/investigation/) | Validated fresh input, retrieval/analysis/controlled follow-up and shared final validation |
+| Durable Graph execution | [execution contract](../src/maintainer_lens/schemas/investigation_checkpoint.py), [resume service](../src/maintainer_lens/services/investigation_checkpoint_execution.py), [Saver](../src/maintainer_lens/agents/investigation/checkpointing.py), [SQL store](../src/maintainer_lens/db/investigation_checkpoints.py), [models](../src/maintainer_lens/db/models/investigation_checkpoint.py) | Frozen input/configuration, task-scoped checkpoints/pending writes and claim-fenced recovery |
 | Source knowledge | [indexing](../src/maintainer_lens/services/repository_indexing.py), [search](../src/maintainer_lens/services/repository_search.py) | Commit-pinned indexes, build leases, exact semantic/optional keyword retrieval |
 | Investigation Source selection | [selection boundary](../src/maintainer_lens/services/investigation_source_index.py), [adapter](../src/maintainer_lens/agents/investigation/retrieval.py) | Validate an explicit or backend-selected UUID against repository, ready status and full embedding identity; return immutable metadata, without building or choosing latest |
 | History knowledge | [preparation](../src/maintainer_lens/services/repository_history_pipeline.py), [sync](../src/maintainer_lens/services/repository_history_sync.py), [semantic retrieval](../src/maintainer_lens/services/repository_history_semantic_search.py) | Bounded collection/enrichment/indexing and repository-scoped evidence retrieval |
@@ -54,9 +55,12 @@ POST /investigations/from-url (automatic) or /investigations (explicit knowledge
   → RabbitMQ pending/retry/dead-letter queues
   → Worker → existing Runner: claim commit + concurrent lease renewal
   → compare message/task repository, Issue, requested Source UUID and preparation mode
-  → optional Source metadata preflight, then public GitHub fetch + fenced Snapshot commit
-  → automatic mode: prepare/reuse knowledge → validate index → fenced UUID binding
-  → initial History + enabled Source → analysis → bounded selected-tool follow-up
+  → load frozen Graph run, if present; compare code/model/configuration
+  → validate effective Source index in its own short scope
+  → new run: public fetch + fenced Snapshot; automatic preparation + UUID binding
+  → new run: freeze trusted InvestigationInput and execution configuration
+  → fresh input or restored checkpoint → retrieval/analysis/bounded follow-up
+  → sync checkpoint durability before each next super-step and Graph return
   → fenced result commit
   → Runner: guarded task-success commit
   → Handler returns → Consumer ACK
@@ -224,12 +228,12 @@ The default Worker injects `process_graph_investigation()` into the existing Run
 
 ```text
 short transaction: validate claim, repository/Issue/requested UUID/mode; load saved auto budget
-  → close Session; optional injected Source metadata validator in its own short scope
-  → await Issue service: public fetch + fenced snapshot commit
-  → automatic/unbound: await Source + History preparation, validate UUID
-  → short transaction: bind prepared UUID under active claim, commit
-  → build InvestigationInput from snapshot and effective UUID
-  → await complete Graph application call
+  → close Session; load/compare frozen execution if checkpointing is enabled
+  → optional Source metadata validator in its own short scope
+  → no frozen run: await Issue service, preparation and fenced UUID binding
+  → no frozen run: freeze input/configuration in a short fenced transaction
+  → existing run: reuse its Issue input and effective index, without HTTP/preparation
+  → await checkpointed Graph application (or unchanged standalone entry)
   → short transaction: fenced result upsert + commit
   → return None
 Existing Runner: guarded success commit
@@ -238,8 +242,8 @@ Existing Runner: guarded success commit
 It creates no clients and adds no claim/heartbeat/status machine or retry loop.
 Automatic preparation uses the injected service and stored limits; a previously
 bound index is validated and reused without another preparation call. Graph
-input/options are validated after snapshot/preparation. Its deadline excludes
-GitHub snapshot acquisition, knowledge preparation and result commit.
+input/options are validated after snapshot/preparation. Its active-segment deadline excludes
+GitHub snapshot acquisition, knowledge preparation, frozen-run setup and result commit.
 A snapshot may remain after later Graph/result failure. Production resources
 belong to the Worker, while adapters and processor retain their Session scopes.
 
@@ -258,6 +262,7 @@ calling retrieval services that own their own transaction scopes.
 | Outbox dispatch | Claim commit → network publish → guarded finalization commit |
 | Runner | Claim, heartbeat and terminal updates use independent short transactions |
 | Snapshot | Caller-owned short fenced write transaction |
+| Graph progress | Each run/checkpoint/pending-write callback owns a short Session/transaction; lock Task, validate frozen identity and fresh claim/lease, write, then recheck ownership before commit |
 | Graph result | Serialize before awaits; lock task by ID, then recheck running/token/lease using a new PostgreSQL `clock_timestamp()` evaluation; compare identity; upsert; caller commits |
 | HTTP details | One nonlocking SELECT with two left outer joins reads task/snapshot/result; refresh cached ORM objects; request Session cleanup releases the read transaction |
 
@@ -269,7 +274,8 @@ A writer returning `True` means SQL executed, not that the transaction committed
 
 Snapshot/result commits and Runner success commit remain separate. A crash can
 leave artifacts on an unfinished task. Retries may repeat remote computation;
-existing artifacts are not checkpoints or computation caches. Fencing protects
+Snapshot/result artifacts are not checkpoints. Separate Graph checkpoints now
+reuse committed progress; in-flight calls can still repeat. Fencing protects
 writes from stale owners, not exactly-once LLM execution.
 
 GET exposes a result only for `succeeded` tasks. Other states return null even
@@ -359,9 +365,10 @@ document itself, takes the writer-generated UUID into POST, cleans only its own
 index/data, caps requests at GitHub/embedding/LLM 8/6/7 and parks retries. This
 partial test index is excluded from automatic reuse by its unique chunker version. GET runs through an in-process ASGI
 app, not a separately deployed HTTP server. Supplying tests is not evidence they
-passed. Final quality/semantic evaluation and CI/review remain required before M4
-closure. Checkpointer, HITL, cross-run memory, monetary budgets and private access
-remain future work; none replace the task lifecycle.
+passed. M4 is merged in PR #14; broad semantic quality remains a release acceptance concern.
+Checkpoint recovery is implemented in the M5 slice below, with acceptance pending.
+HITL, cross-run memory, monetary budgets and private access remain future work;
+none replace the task lifecycle.
 
 ### Automatic URL intake and knowledge preparation
 
@@ -475,6 +482,86 @@ the automatic paid smoke passed on 2026-10-29. The latter investigated
 sampleproject Issue #225 from URL-only submission, used three rounds and returned
 `needs_more_evidence`, with GitHub/embedding/Chat requests 22/6/6, all HTTP 200
 and `stop`/`tool_calls` completions. The assistant did not independently run these
-tests. M4 closes after focused report/excerpt/citation quality review and the
-reviewed green-CI PR is merged. Valid provenance is not semantic fact verification. M5 recovery,
-HITL and memory, and M6 product UI remain outside this integration.
+tests. Git contains the M4 squash merge in PR #14; the maintainer reported the CI
+fix resolved. Valid provenance is not semantic fact verification. M5 adds recovery
+as a separate boundary below; HITL/memory and the M6 product UI remain pending.
+
+
+## Durable Graph execution and recovery
+
+The default Worker enables a custom async `BaseCheckpointSaver` through existing
+SQLAlchemy/asyncpg resources. The [Alembic revision](../migrations/versions/f9a4d6e8b205_add_investigation_checkpoints.py)
+adds three application-owned tables, registered under `db/models`:
+
+- `investigation_graph_runs`: one immutable input/configuration snapshot per Task;
+  it contains no additional task status, claim or lease.
+- `investigation_checkpoints`: full typed framework snapshots, channel versions,
+  parent checkpoint identity and JSON metadata. The composite primary key also
+  supports latest-checkpoint lookup within one task/namespace.
+- `investigation_checkpoint_writes`: ordered pending node outputs, with SDK
+  deduplication semantics. These reference the run directly because their callback
+  can arrive before the corresponding snapshot callback.
+
+`thread_id` is the stable business Task ID. Each Saver/SQL store is bound to the
+current claim token; a replacement claim reuses the same thread. Every read/write
+locks the Task, checks `running`/token/lease using fresh PostgreSQL wall time after
+the lock wait, compares repository/Issue/effective index with the frozen run and
+checks ownership again before commit. Concurrent callbacks own separate Sessions.
+No DB transaction spans provider requests. Completed tasks cannot be modified by
+an old Saver; deleting a Task cascades through all three tables.
+
+The run freezes the Issue title/body, language, effective Source UUID, code and
+SDK versions, strategy, rounds, deadlines, retrieval sizes, embedding identity,
+LLM identity/output allowance and thinking mode. Endpoint identities are hashes;
+credentials are not persisted. API key rotation alone does not change identity.
+A configuration/version mismatch or corrupt saved identity fails explicitly,
+without clearing checkpoints, selecting a new HEAD or silently restarting.
+Graph semantics/prompt changes must increment the application Graph version.
+
+`execute_checkpointed_investigation()` shares M4 input/options and terminal
+validation. It validates saved identity/evidence/rounds, including pending writes,
+then calls the real compiled Graph with fresh input only if no checkpoint exists;
+otherwise it passes `None`. It uses `durability="sync"` before the next super-step
+and completion. The serializer disables pickle and arbitrary imported types.
+The Saver validates the verified checkpoint payload formats v2 (public helpers)
+and v4 (the installed Graph runtime), preserving the version without rewriting
+it. The checkpoint package's helper `LATEST_VERSION` is not the runtime format
+version. Unknown/non-integer formats still fail; frozen application/storage and
+SDK package compatibility checks remain separate.
+The adapter supports async core Saver operations for the current ordinary state
+channels; it does not implement subgraph/DeltaChannel reconstruction, synchronous
+execution or administrative cross-task pruning/copy APIs.
+
+One active execution segment retains the 120-second deadline. Restored rounds
+keep the original 1–3 budget; existing MQ attempts remain bounded. The deadline
+includes checkpoint I/O. LangGraph waits for background checkpoint callbacks on
+exit, so the application shields its child Graph task only to intercept outer
+cancellation, cancel Saver I/O and the child, and await cleanup before rethrowing.
+This is resource cleanup, not a second task lifecycle or retry loop. Own deadline
+uses `timeout_scope.expired()`; upstream errors/groups and external cancellation
+retain their meanings. Cleanup may take additional time and cancellation does
+not guarantee that a remote provider stops computing.
+
+The final Graph checkpoint precedes result commit; result commit still precedes
+Runner success and Consumer ACK. A crash between those commits resumes completed
+Graph state, revalidates and fenced-upserts the result, then lets the existing
+Runner finish. Already committed nodes are reused; an in-flight provider call
+whose output was not persisted may repeat. Knowledge preparation before the run
+is created is not precisely checkpointed, although ready knowledge can be reused.
+There is no exactly-once or cumulative cross-attempt monetary-budget guarantee.
+
+The offline [protocol/execution tests](../tests/test_investigation_checkpoint_execution.py)
+and [contract tests](../tests/test_investigation_checkpoint_contracts.py) use real
+compiled Graphs with isolated storage/provider dependencies. The opt-in
+[PostgreSQL tests](../tests/integration/test_investigation_checkpoint_persistence.py)
+cover persistence, lock waits, ownership, cancellation, reclaim and the
+result/status commit gap. The existing
+[Worker E2E suite](../tests/integration/test_worker_graph_source_e2e.py) additionally
+cancels analysis and restarts the default Worker through real MQ redelivery.
+These M5 tests are supplied but not yet run; see the README acceptance commands.
+
+Human review remains future work and will be on demand. Normal reports do not
+require approval. Adjustable budget exhaustion may later preserve trusted
+progress for a human decision; it cannot authorize invalid JSON, citations,
+repository/index/claim boundaries or provider hard limits. No review endpoints,
+waiting states or trusted long-term memory are introduced by checkpoint storage.

@@ -1,5 +1,6 @@
 """Build the LangGraph investigation workflow."""
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -54,6 +55,7 @@ def build_investigation_graph(
     max_search_rounds: int = 1,
     query_planner: FollowUpQueryPlanner | None = None,
     tool_search_runner: ToolSearchRunner | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
     """Build retrieval, analysis, and optional LLM query planning."""
 
@@ -195,4 +197,8 @@ def build_investigation_graph(
     else:
         builder.add_edge(last_search_node, END)
 
-    return builder.compile()
+    return (
+        builder.compile(checkpointer=checkpointer)
+        if checkpointer is not None
+        else builder.compile()
+    )

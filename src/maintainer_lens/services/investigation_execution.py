@@ -5,6 +5,9 @@ import math
 from datetime import datetime
 from uuid import UUID
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph.state import CompiledStateGraph
+
 from maintainer_lens.agents.investigation.evidence import (
     history_evidence_id,
     to_history_evidence,
@@ -23,6 +26,7 @@ from maintainer_lens.agents.investigation_analysis import (
     InvestigationAnalyzer,
 )
 from maintainer_lens.agents.investigation_graph import build_investigation_graph
+from maintainer_lens.schemas.investigation_checkpoint import CheckpointEvidenceContext
 from maintainer_lens.schemas.investigation_contracts import (
     InvestigationInput as InvestigationInput,
 )
@@ -39,7 +43,9 @@ class InvestigationDeadlineExceeded(TimeoutError):
     """The deadline owned by the complete graph execution expired."""
 
 
-def validate_investigation_evidence(result: InvestigationResult) -> None:
+def validate_investigation_evidence(
+    result: InvestigationResult | CheckpointEvidenceContext,
+) -> None:
     """Resolve actual analysis citations against all returned evidence."""
 
     references: dict[str, tuple[str, str]] = {}
@@ -141,7 +147,7 @@ def _validate_result(
         ) from exc
 
 
-async def execute_graph_investigation(
+def _prepare_execution(
     request: InvestigationInput,
     *,
     history_searcher: HistorySearcher,
@@ -151,8 +157,9 @@ async def execute_graph_investigation(
     max_search_rounds: int = 1,
     query_planner: FollowUpQueryPlanner | None = None,
     tool_search_runner: ToolSearchRunner | None = None,
-) -> InvestigationResult:
-    """Run a fresh graph within one deadline, without owning clients or task leases."""
+    checkpointer: BaseCheckpointSaver | None = None,
+) -> tuple[InvestigationInput, CompiledStateGraph, InvestigationState]:
+    """Validate options and compile a fresh or checkpoint-capable investigation graph."""
 
     # Revalidate even model_copy/model_construct inputs before invoking dependencies.
     if not isinstance(request, InvestigationInput):
@@ -196,6 +203,7 @@ async def execute_graph_investigation(
         max_search_rounds=max_search_rounds,
         query_planner=query_planner,
         tool_search_runner=tool_search_runner,
+        **({"checkpointer": checkpointer} if checkpointer is not None else {}),
     )
     initial_state: InvestigationState = {
         "repository": request.repository,
@@ -209,6 +217,32 @@ async def execute_graph_investigation(
     if request.source_index_id is not None:
         initial_state["source_index_id"] = str(request.source_index_id)
 
+    return request, graph, initial_state
+
+
+async def execute_graph_investigation(
+    request: InvestigationInput,
+    *,
+    history_searcher: HistorySearcher,
+    analyzer: InvestigationAnalyzer,
+    timeout_seconds: float,
+    source_searcher: SourceSearcher | None = None,
+    max_search_rounds: int = 1,
+    query_planner: FollowUpQueryPlanner | None = None,
+    tool_search_runner: ToolSearchRunner | None = None,
+) -> InvestigationResult:
+    """Run a fresh graph within one deadline, without owning clients or task leases."""
+
+    request, graph, initial_state = _prepare_execution(
+        request,
+        history_searcher=history_searcher,
+        analyzer=analyzer,
+        timeout_seconds=timeout_seconds,
+        source_searcher=source_searcher,
+        max_search_rounds=max_search_rounds,
+        query_planner=query_planner,
+        tool_search_runner=tool_search_runner,
+    )
     timeout_scope = asyncio.timeout(timeout_seconds)
     try:
         async with timeout_scope:

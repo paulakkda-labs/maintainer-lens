@@ -13,6 +13,7 @@ from maintainer_lens.agents.investigation_analysis import (
     InvestigationAnalyzer,
     ResponseLanguage,
 )
+from maintainer_lens.db.investigation_checkpoints import InvestigationCheckpointStore
 from maintainer_lens.db.investigation_preparation import (
     bind_prepared_source_index,
     get_claimed_knowledge_preparation,
@@ -23,9 +24,15 @@ from maintainer_lens.investigation_runner import (
     LeaseLostError,
     PermanentInvestigationError,
 )
+from maintainer_lens.schemas.investigation_checkpoint import GraphCheckpointConfig
 from maintainer_lens.schemas.investigation_contracts import (
     InvestigationIdentity,
     InvestigationInput,
+)
+from maintainer_lens.services.investigation_checkpoint_execution import (
+    execute_checkpointed_investigation,
+    load_checkpointed_investigation,
+    validate_execution_compatibility,
 )
 from maintainer_lens.services.investigation_execution import execute_graph_investigation
 from maintainer_lens.services.investigation_preparation import KnowledgePreparer
@@ -52,11 +59,14 @@ async def process_graph_investigation(
     tool_search_runner: ToolSearchRunner | None = None,
     auto_prepare_knowledge: bool = False,
     knowledge_preparer: KnowledgePreparer | None = None,
+    checkpoint_store: InvestigationCheckpointStore | None = None,
+    checkpoint_config: GraphCheckpointConfig | None = None,
 ) -> None:
     """Process an existing claim, returning only after its result commits.
 
     The caller owns clients and the claim/lease lifecycle. Automatic mode uses
     its stored budget and binds the prepared identity before Graph execution.
+    Checkpoint-enabled retries reuse a frozen input before snapshot acquisition.
     Graph options are validated by the application entry after snapshot commit;
     its deadline does not cover snapshot acquisition or database commits.
     """
@@ -79,6 +89,31 @@ async def process_graph_investigation(
         raise ValueError(
             "Automatic preparation requires Source dependencies and no requested index"
         )
+
+    if (checkpoint_store is None) != (checkpoint_config is None):
+        raise ValueError("Checkpoint store and configuration must be supplied together")
+    if checkpoint_store is not None:
+        if (checkpoint_store.task_id, checkpoint_store.claim_token) != (
+            task_id,
+            claim_token,
+        ):
+            raise ValueError("Checkpoint store belongs to another claim")
+        checkpoint_config = validate_execution_compatibility(checkpoint_config)
+        strategy = (
+            "tool"
+            if tool_search_runner is not None
+            else "query_planner"
+            if query_planner is not None
+            else "deterministic"
+        )
+        if (
+            checkpoint_config.response_language != response_language
+            or checkpoint_config.max_search_rounds != max_search_rounds
+            or checkpoint_config.timeout_seconds != timeout_seconds
+            or checkpoint_config.source_enabled != (source_searcher is not None)
+            or checkpoint_config.search_strategy != strategy
+        ):
+            raise ValueError("Processor options do not match checkpoint configuration")
 
     preparation = None
     async with session_factory() as session:
@@ -114,6 +149,11 @@ async def process_graph_investigation(
                         "Preparation identity changed during preflight"
                     )
 
+    frozen_run = (
+        await load_checkpointed_investigation(checkpoint_store, checkpoint_config)
+        if checkpoint_store is not None
+        else None
+    )
     task_repository, task_issue_number, task_source_index_id = identity
     if preparation is not None:
         task_source_index_id = preparation.prepared_source_index_id
@@ -124,50 +164,67 @@ async def process_graph_investigation(
             await source_index_validator(task_repository, task_source_index_id)
     elif source_searcher is not None and not auto_prepare_knowledge:
         raise ValueError("Source search requires a task source_index_id")
-    snapshot = await investigate_issue(
-        http_client=http_client,
-        session_factory=session_factory,
-        task_id=task_id,
-        claim_token=claim_token,
-        repository=task_repository,
-        issue_number=task_issue_number,
-    )
-    if preparation is not None and task_source_index_id is None:
-        task_source_index_id = await knowledge_preparer(
-            task_repository, preparation.budget
+    if frozen_run is not None:
+        request = frozen_run.request
+    else:
+        snapshot = await investigate_issue(
+            http_client=http_client,
+            session_factory=session_factory,
+            task_id=task_id,
+            claim_token=claim_token,
+            repository=task_repository,
+            issue_number=task_issue_number,
         )
-        await source_index_validator(task_repository, task_source_index_id)
-        async with session_factory() as session, session.begin():
-            bound = await bind_prepared_source_index(
-                session,
-                task_id=task_id,
-                claim_token=claim_token,
-                repository=task_repository,
-                issue_number=task_issue_number,
-                source_index_id=task_source_index_id,
+        if preparation is not None and task_source_index_id is None:
+            task_source_index_id = await knowledge_preparer(
+                task_repository, preparation.budget
             )
-            if not bound:
-                raise LeaseLostError(
-                    "Investigation claim was lost before index binding"
+            await source_index_validator(task_repository, task_source_index_id)
+            async with session_factory() as session, session.begin():
+                bound = await bind_prepared_source_index(
+                    session,
+                    task_id=task_id,
+                    claim_token=claim_token,
+                    repository=task_repository,
+                    issue_number=task_issue_number,
+                    source_index_id=task_source_index_id,
                 )
-    request = InvestigationInput(
-        repository=task_repository,
-        issue_number=task_issue_number,
-        issue_title=snapshot.title,
-        issue_body=snapshot.body,
-        response_language=response_language,
-        source_index_id=task_source_index_id,
-    )
-    result = await execute_graph_investigation(
-        request,
-        history_searcher=history_searcher,
-        analyzer=analyzer,
-        timeout_seconds=timeout_seconds,
-        source_searcher=source_searcher,
-        max_search_rounds=max_search_rounds,
-        query_planner=query_planner,
-        tool_search_runner=tool_search_runner,
-    )
+                if not bound:
+                    raise LeaseLostError(
+                        "Investigation claim was lost before index binding"
+                    )
+        request = InvestigationInput(
+            repository=task_repository,
+            issue_number=task_issue_number,
+            issue_title=snapshot.title,
+            issue_body=snapshot.body,
+            response_language=response_language,
+            source_index_id=task_source_index_id,
+        )
+        if checkpoint_store is not None:
+            frozen_run = await checkpoint_store.create_run(request, checkpoint_config)
+
+    if checkpoint_store is not None:
+        result = await execute_checkpointed_investigation(
+            frozen_run,
+            checkpoint_store,
+            history_searcher=history_searcher,
+            analyzer=analyzer,
+            source_searcher=source_searcher,
+            query_planner=query_planner,
+            tool_search_runner=tool_search_runner,
+        )
+    else:
+        result = await execute_graph_investigation(
+            request,
+            history_searcher=history_searcher,
+            analyzer=analyzer,
+            timeout_seconds=timeout_seconds,
+            source_searcher=source_searcher,
+            max_search_rounds=max_search_rounds,
+            query_planner=query_planner,
+            tool_search_runner=tool_search_runner,
+        )
 
     async with session_factory() as session:
         async with session.begin():
