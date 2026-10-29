@@ -30,6 +30,7 @@ from maintainer_lens.clients.embedding_factory import create_embedding_client
 from maintainer_lens.clients.github_http import create_github_http_client
 from maintainer_lens.clients.rabbitmq import create_rabbitmq_connection
 from maintainer_lens.core.config import get_settings
+from maintainer_lens.core.investigation_logging import investigation_log_context
 from maintainer_lens.db.engine import create_db_engine
 from maintainer_lens.db.investigation_checkpoints import InvestigationCheckpointStore
 from maintainer_lens.db.investigation_progress import (
@@ -104,18 +105,26 @@ def build_investigation_message_handler(
         request: InvestigationRequestedMessage,
         final_attempt: bool,
     ) -> None:
-        await process_investigation_request(
-            request=request,
-            session_factory=session_factory,
-            processor=lambda claim_token: investigate(
-                request,
-                claim_token,
-            ),
-            final_attempt=final_attempt,
-            **(
-                {"event_recorder": event_recorder} if event_recorder is not None else {}
-            ),
-        )
+        with investigation_log_context(
+            task_id=request.task_id,
+            repository=request.repository,
+            issue_number=request.issue_number,
+            generation=request.generation,
+        ):
+            await process_investigation_request(
+                request=request,
+                session_factory=session_factory,
+                processor=lambda claim_token: investigate(
+                    request,
+                    claim_token,
+                ),
+                final_attempt=final_attempt,
+                **(
+                    {"event_recorder": event_recorder}
+                    if event_recorder is not None
+                    else {}
+                ),
+            )
 
     async def handle_message(
         message: AbstractIncomingMessage,

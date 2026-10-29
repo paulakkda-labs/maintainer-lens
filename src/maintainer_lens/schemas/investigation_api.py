@@ -33,6 +33,25 @@ class CreateInvestigationResponse(BaseModel):
     status: Literal["pending"]
 
 
+class InvestigationTaskSummary(BaseModel):
+    """An existing task locator; details/events remain separate read endpoints."""
+
+    task_id: str
+    status: InvestigationStatus
+    generation: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class InvestigationLookupPage(BaseModel):
+    """Read-only history across preparation modes and budget profiles."""
+
+    repository: str
+    issue_number: int
+    tasks: list[InvestigationTaskSummary]
+    next_before: str | None = None
+
+
 class IssueSnapshotResponse(BaseModel):
     """GitHub issue snapshot stored by the investigator."""
 

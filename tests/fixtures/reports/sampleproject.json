@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "observed_on": "2026-10-29",
+  "cases": [
+    {
+      "id": "license-metadata",
+      "repository": "pypa/sampleproject",
+      "issue_number": 225,
+      "observed_issue_state": "open",
+      "review_focus": [
+        "Check whether retrieved pyproject.toml excerpts actually show the reported license metadata and whether the report distinguishes current HEAD from the reporter's environment.",
+        "Separate facts about this repository from external packaging-tool requirements that were not independently retrieved."
+      ],
+      "unsupported_claims": [
+        "A verified fix, release or successful build without matching evidence.",
+        "Treating the investigated Issue body as independent historical corroboration."
+      ]
+    },
+    {
+      "id": "cli-usage",
+      "repository": "pypa/sampleproject",
+      "issue_number": 221,
+      "observed_issue_state": "open",
+      "review_focus": [
+        "Look for source or configuration evidence concerning script entry points and distinguish a usage request from a demonstrated defect.",
+        "Check whether debugging advice is evidence-supported or explicitly presented as a suggestion needing verification."
+      ],
+      "unsupported_claims": [
+        "Inventing a main.py file, a runnable command or a verified debugging procedure.",
+        "Claiming that the user's environment was reproduced or tested."
+      ]
+    },
+    {
+      "id": "misdirected-closed-issue",
+      "repository": "pypa/sampleproject",
+      "issue_number": 200,
+      "observed_issue_state": "closed",
+      "review_focus": [
+        "Check the observed GitHub state separately from technical repair claims. The public discussion identifies a report directed to the wrong repository.",
+        "If the relevant comments were outside bounded History preparation, acknowledge the coverage gap rather than inventing a sampleproject code fix."
+      ],
+      "unsupported_claims": [
+        "Inferring that sampleproject fixed the reported exception solely because the Issue is closed.",
+        "Claiming analysis of another repository's source when only sampleproject was indexed."
+      ]
+    }
+  ]
+}

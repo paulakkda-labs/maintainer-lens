@@ -209,7 +209,7 @@ async def test_result_preserves_identity_full_records_and_context() -> None:
         f"{history[0].title}\n{history[0].content[:1600]}"
     )
     assert result.analysis_evidence[5]["content"] == (
-        f"{source[0].file_path}:100-120\n{source[0].content[:1600]}"
+        f"{source[0].file_path}:100-120\n{source[0].content}"
     )
     assert "searched_queries" not in result.model_dump()
     assert "no_new_evidence" not in result.model_dump()

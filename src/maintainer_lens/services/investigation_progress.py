@@ -3,6 +3,7 @@
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from maintainer_lens.core.investigation_logging import log_investigation_event
 from maintainer_lens.db.investigation_progress import append_task_event
 from maintainer_lens.schemas.investigation_progress import (
     InvestigationErrorInfo,
@@ -131,6 +132,12 @@ class InvestigationProgressReporter:
                 phase=phase,
                 search_round=search_round,
             )
+        log_investigation_event(
+            "phase_committed",
+            task_id=self.task_id,
+            phase=phase,
+            search_round=search_round,
+        )
 
     async def node(self, name: str, state: dict):
         phases = {

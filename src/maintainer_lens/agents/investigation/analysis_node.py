@@ -15,6 +15,7 @@ from maintainer_lens.agents.investigation_analysis import (
     InvestigationAnalysis,
     InvestigationAnalyzer,
 )
+from maintainer_lens.services.source_chunker import MAX_WINDOW_CHARS
 
 
 def make_analysis_node(analyzer: InvestigationAnalyzer):
@@ -53,6 +54,14 @@ def make_analysis_node(analyzer: InvestigationAnalyzer):
 
         for hit in state.get("source_evidence", [])[:5]:
             evidence_id = f"source:{hit['index_id']}:{hit['chunk_key']}"
+            # Automatic indexing already bounds source chunks to this size.
+            # Preserve those chunks rather than discarding their later lines.
+            content = hit["content"][:MAX_WINDOW_CHARS]
+            if len(hit["content"]) > MAX_WINDOW_CHARS:
+                content += (
+                    "\n[Source excerpt truncated; remaining content was not supplied "
+                    "to this analysis.]"
+                )
 
             evidence.append(
                 {
@@ -62,7 +71,7 @@ def make_analysis_node(analyzer: InvestigationAnalyzer):
                     "content": (
                         f"{hit['file_path']}:"
                         f"{hit['start_line']}-{hit['end_line']}\n"
-                        f"{hit['content'][:1600]}"
+                        f"{content}"
                     ),
                 }
             )
