@@ -87,6 +87,7 @@ async def create_investigation(
         issue_number=payload.issue_number,
         source_index_id=payload.source_index_id,
         knowledge_budget_profile=payload.knowledge_budget_profile,
+        response_language=payload.response_language,
     )
 
     return CreateInvestigationResponse(
@@ -121,6 +122,7 @@ async def create_investigation_from_url(
             repository=identity.repository,
             issue_number=identity.issue_number,
             knowledge_budget_profile=payload.knowledge_budget_profile,
+            response_language=payload.response_language,
         )
     except (ValueError, StoredInvestigationResultError) as exc:
         raise HTTPException(
@@ -176,6 +178,7 @@ async def lookup_investigations(
         tasks=[
             InvestigationTaskSummary(
                 task_id=task.id,
+                response_language=getattr(task, "response_language", None) or "zh",
                 status=task.status,
                 generation=task.execution_generation,
                 created_at=task.created_at,
@@ -240,6 +243,12 @@ async def get_investigation(
                 ),
             )
             report_markdown = render_investigation_report(graph_result)
+            if graph_result.response_language != (
+                getattr(task, "response_language", None) or "zh"
+            ):
+                raise StoredInvestigationResultError(
+                    "Stored report language differs from its task"
+                )
         except (StoredInvestigationResultError, InvalidInvestigationResultError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -311,10 +320,12 @@ async def get_investigation(
                     previous.repository.casefold(),
                     previous.issue_number,
                     previous.knowledge_budget,
+                    getattr(previous, "response_language", None) or "zh",
                 ) != (
                     task.repository.casefold(),
                     task.issue_number,
                     task.knowledge_budget,
+                    getattr(task, "response_language", None) or "zh",
                 ):
                     raise HTTPException(
                         status_code=500, detail="Stored previous report is unavailable"
@@ -330,6 +341,7 @@ async def get_investigation(
             ) from exc
     return InvestigationDetailResponse(
         task_id=task.id,
+        response_language=getattr(task, "response_language", None) or "zh",
         repository=task.repository,
         issue_number=task.issue_number,
         source_index_id=task.source_index_id,

@@ -427,7 +427,7 @@ async def _assert_readback(factory, owned):
         json.dumps(body["result"]), strict=True
     )
     assert result.repository == REPOSITORY and result.issue_number == TARGET_ISSUE
-    assert 1 <= result.search_round <= 3 and result.response_language == "zh"
+    assert 1 <= result.search_round <= 3 and result.response_language == "en"
     assert result.source_index_id is None and result.source_evidence == []
     assert len(result.history_evidence) == len(result.analysis_evidence) == 1
     assert result.history_evidence[0]["number"] == HISTORY_ISSUE
@@ -476,7 +476,7 @@ async def test_live_history_worker_commits_real_result_before_ack(monkeypatch):
         pytest.fail("Configure LLM_API_KEY before enabling the live smoke")
     assert worker.WORKER_MAX_SEARCH_ROUNDS == 3
     assert worker.WORKER_GRAPH_TIMEOUT_SECONDS == 120.0
-    assert worker.WORKER_RESPONSE_LANGUAGE == "zh"
+    assert worker.WORKER_RESPONSE_LANGUAGE == "en"
     budget = _RequestBudget()
     owned = _OwnedRows()
 
@@ -504,7 +504,11 @@ async def test_live_history_worker_commits_real_result_before_ack(monkeypatch):
             async with factory() as session:
                 async with session.begin():
                     await create_investigation_task(
-                        session, owned.task_id, REPOSITORY, TARGET_ISSUE
+                        session,
+                        owned.task_id,
+                        REPOSITORY,
+                        TARGET_ISSUE,
+                        response_language="en",
                     )
                     owned.task_inserted = True
             ready, acknowledged, clients = _install_worker_observers(
@@ -514,7 +518,11 @@ async def test_live_history_worker_commits_real_result_before_ack(monkeypatch):
             stack.push_async_callback(_stop_worker, operation)
             await _wait_for_worker(operation, ready, 30)
             await publish_investigation(
-                broker.exchange, owned.task_id, REPOSITORY, TARGET_ISSUE
+                broker.exchange,
+                owned.task_id,
+                REPOSITORY,
+                TARGET_ISSUE,
+                response_language="en",
             )
             await _wait_for_worker(operation, acknowledged, 150)
             await _stop_worker(operation)

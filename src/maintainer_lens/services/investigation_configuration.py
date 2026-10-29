@@ -10,7 +10,7 @@ from maintainer_lens.schemas.investigation_checkpoint import (
     endpoint_fingerprint,
 )
 
-WORKER_RESPONSE_LANGUAGE: ResponseLanguage = "zh"
+WORKER_RESPONSE_LANGUAGE: ResponseLanguage = "en"
 WORKER_MAX_SEARCH_ROUNDS = 3
 WORKER_GRAPH_TIMEOUT_SECONDS = 120.0
 WORKER_TOOL_TIMEOUT_SECONDS = 60.0
@@ -18,10 +18,13 @@ WORKER_EMBEDDING_PROVIDER = "openai-compatible"
 
 
 def make_worker_execution_config(
-    settings: Settings, *, source_enabled: bool
+    settings: Settings,
+    *,
+    source_enabled: bool,
+    response_language: ResponseLanguage = WORKER_RESPONSE_LANGUAGE,
 ) -> GraphCheckpointConfig:
     return GraphCheckpointConfig(
-        response_language=WORKER_RESPONSE_LANGUAGE,
+        response_language=response_language,
         max_search_rounds=WORKER_MAX_SEARCH_ROUNDS,
         timeout_seconds=WORKER_GRAPH_TIMEOUT_SECONDS,
         search_strategy="tool",

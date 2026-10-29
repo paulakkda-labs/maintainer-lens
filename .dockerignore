@@ -16,3 +16,7 @@ __MACOSX
 tests
 *.zip
 *.log
+**/node_modules
+web/dist
+web/test-results
+web/playwright-report

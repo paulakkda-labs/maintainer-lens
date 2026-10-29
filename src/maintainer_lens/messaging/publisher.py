@@ -5,6 +5,7 @@ from uuid import UUID
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustExchange
 
+from maintainer_lens.agents.investigation_analysis import ResponseLanguage
 from maintainer_lens.messaging.schemas import (
     MISSING_TASK_CHECKS_HEADER,
     RETRY_ATTEMPTS_HEADER,
@@ -21,6 +22,7 @@ def create_investigation_message(
     source_index_id: UUID | None = None,
     auto_prepare_knowledge: bool = False,
     generation: int = 0,
+    response_language: ResponseLanguage = "zh",
 ) -> aio_pika.Message:
     """Create a persistent JSON message for an investigation task."""
     payload = InvestigationRequestedMessage(
@@ -30,6 +32,7 @@ def create_investigation_message(
         source_index_id=source_index_id,
         auto_prepare_knowledge=auto_prepare_knowledge,
         generation=generation,
+        response_language=response_language,
     )
     message_body = payload.model_dump_json().encode("utf-8")
     message = aio_pika.Message(
@@ -50,6 +53,7 @@ async def publish_investigation(
     source_index_id: UUID | None = None,
     auto_prepare_knowledge: bool = False,
     generation: int = 0,
+    response_language: ResponseLanguage = "zh",
 ) -> None:
     """Publish an investigation request to RabbitMQ."""
     message = create_investigation_message(
@@ -59,6 +63,7 @@ async def publish_investigation(
         source_index_id=source_index_id,
         auto_prepare_knowledge=auto_prepare_knowledge,
         generation=generation,
+        response_language=response_language,
     )
 
     await exchange.publish(

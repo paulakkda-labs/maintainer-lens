@@ -157,6 +157,7 @@ async def test_url_route_returns_selected_task_and_resolution_decision(
         repository="org/repo",
         issue_number=123,
         knowledge_budget_profile="standard",
+        response_language="en",
     )
 
 

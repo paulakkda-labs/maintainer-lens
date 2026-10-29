@@ -14,12 +14,14 @@ async def create_investigation_task(
     task_id: str,
     repository: str,
     issue_number: int,
+    response_language: str = "en",
 ) -> InvestigationTask:
     """Create a pending investigation task."""
     task = InvestigationTask(
         id=task_id,
         repository=repository,
         issue_number=issue_number,
+        response_language=response_language,
     )
     session.add(task)
     await session.flush()
@@ -81,6 +83,7 @@ async def get_claimed_investigation_identity(
     task_id: str,
     claim_token: str,
     auto_prepare_knowledge: bool = False,
+    response_language: str = "zh",
 ) -> tuple[str, int, UUID | None] | None:
     """Read identity for an active claim without holding a row lock.
 
@@ -92,6 +95,7 @@ async def get_claimed_investigation_identity(
             InvestigationTask.repository,
             InvestigationTask.issue_number,
             InvestigationTask.source_index_id,
+            InvestigationTask.response_language,
         ).where(
             InvestigationTask.id == task_id,
             InvestigationTask.status == "running",
@@ -103,6 +107,8 @@ async def get_claimed_investigation_identity(
     row = result.one_or_none()
     if row is None:
         return None
+    if row.response_language != response_language:
+        raise ValueError("Investigation message language differs from its task")
     return row.repository, row.issue_number, row.source_index_id
 
 

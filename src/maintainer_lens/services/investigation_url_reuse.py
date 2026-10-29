@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from maintainer_lens.agents.investigation_analysis import ResponseLanguage
 from maintainer_lens.core.config import get_settings
 from maintainer_lens.db.investigation_checkpoints import decode_frozen_graph_run
 from maintainer_lens.db.investigation_results import decode_investigation_result
@@ -77,6 +78,8 @@ async def report_for_task(session, task, *, freshness_override=None):
         if task.auto_prepare_knowledge
         else task.source_index_id,
     )
+    if result.response_language != (getattr(task, "response_language", None) or "zh"):
+        raise ValueError("Stored report language differs from its task")
     freshness = (
         freshness_override
         if freshness_override is not None
@@ -121,7 +124,13 @@ async def _response(
                 previous.repository.casefold(),
                 previous.issue_number,
                 previous.knowledge_budget,
-            ) != (task.repository.casefold(), task.issue_number, task.knowledge_budget):
+                getattr(previous, "response_language", None) or "zh",
+            ) != (
+                task.repository.casefold(),
+                task.issue_number,
+                task.knowledge_budget,
+                getattr(task, "response_language", None) or "zh",
+            ):
                 raise ValueError("Previous report has a different investigation intent")
             selected_freshness = historical_freshness(selected_freshness)
             report = await report_for_task(
@@ -138,16 +147,20 @@ async def _response(
         report_task_id=report[0] if report else None,
         report_markdown=report[1] if report else None,
         freshness=selected_freshness,
+        response_language=getattr(task, "response_language", None) or "zh",
     )
 
 
-async def _create(session, lookup, repository, issue_number, budget):
+async def _create(
+    session, lookup, repository, issue_number, budget, response_language="en"
+):
     message = await add_investigation_submission(
         session,
         repository=repository.casefold(),
         issue_number=issue_number,
         budget=budget,
         auto_prepare_knowledge=True,
+        response_language=response_language,
     )
     lookup.task_id, lookup.check_token, lookup.check_expires_at = (
         message.task_id,
@@ -174,6 +187,7 @@ async def resolve_investigation_url(
     repository: str,
     issue_number: int,
     knowledge_budget_profile="standard",
+    response_language: ResponseLanguage = "en",
     observer: Callable[[str, int], Awaitable[IssueObservation]] = observe_issue,
     configuration_factory: Callable[[], GraphCheckpointConfig] = _execution_config,
 ) -> ResolveInvestigationResponse:
@@ -182,16 +196,23 @@ async def resolve_investigation_url(
         {"repository": repository, "issue_number": issue_number}, strict=True
     )
     repository, issue_number = identity.repository, identity.issue_number
+    if response_language not in ("zh", "en"):
+        raise ValueError("Unsupported response language")
     budget = make_knowledge_preparation_budget(knowledge_budget_profile)
     payload = budget.model_dump(mode="json")
     store = InvestigationUrlStore(session_factory)
-    async with store.locked(repository, issue_number, payload) as (
+    language_options = (
+        {"response_language": response_language} if response_language != "zh" else {}
+    )
+    async with store.locked(repository, issue_number, payload, **language_options) as (
         session,
         lookup,
         task,
     ):
         if task is None:
-            task = await _create(session, lookup, repository, issue_number, budget)
+            task = await _create(
+                session, lookup, repository, issue_number, budget, response_language
+            )
             return await _response(session, lookup, task, "created")
         if task.status == "waiting_review":
             return await _response(session, lookup, task, "awaiting_review")
@@ -229,7 +250,9 @@ async def resolve_investigation_url(
     except asyncio.CancelledError:
         # Best-effort release; expiry remains the durable fallback if SQL is down.
         try:
-            async with store.locked(repository, issue_number, payload) as (
+            async with store.locked(
+                repository, issue_number, payload, **language_options
+            ) as (
                 _,
                 lookup,
                 task,
@@ -246,7 +269,7 @@ async def resolve_investigation_url(
             pass
         raise
 
-    async with store.locked(repository, issue_number, payload) as (
+    async with store.locked(repository, issue_number, payload, **language_options) as (
         session,
         lookup,
         task,
@@ -271,7 +294,9 @@ async def resolve_investigation_url(
                     message="Latest metadata check expired before its decision could commit.",
                 ).model_dump(mode="json")
             if task is None:
-                task = await _create(session, lookup, repository, issue_number, budget)
+                task = await _create(
+                    session, lookup, repository, issue_number, budget, response_language
+                )
             decision = "active" if task.status in ("pending", "running") else "blocked"
             if task.status == "waiting_review":
                 decision = "awaiting_review"
@@ -366,7 +391,9 @@ async def resolve_investigation_url(
                 ).model_dump(mode="json")
                 return await _response(session, lookup, task, "blocked")
             try:
-                current_config = configuration_factory()
+                current_config = configuration_factory().model_copy(
+                    update={"response_language": response_language}
+                )
             except ValueError:
                 task.freshness_payload = freshness.model_copy(
                     update={
@@ -426,7 +453,9 @@ async def resolve_investigation_url(
             task.freshness_payload = freshness.model_dump(mode="json")
             previous_id = task.id
             previous_report = await report_for_task(session, task)
-            task = await _create(session, lookup, repository, issue_number, budget)
+            task = await _create(
+                session, lookup, repository, issue_number, budget, response_language
+            )
             return await _response(
                 session,
                 lookup,
@@ -453,7 +482,9 @@ async def resolve_investigation_url(
             )
             task.freshness_payload = freshness.model_dump(mode="json")
             previous_id = task.id
-            task = await _create(session, lookup, repository, issue_number, budget)
+            task = await _create(
+                session, lookup, repository, issue_number, budget, response_language
+            )
             return await _response(
                 session,
                 lookup,
@@ -489,6 +520,7 @@ async def resolve_investigation_url(
             issue_number=task.issue_number,
             auto_prepare_knowledge=True,
             generation=task.execution_generation,
+            response_language=getattr(task, "response_language", None) or "zh",
         )
         session.add(
             InvestigationOutboxEvent(

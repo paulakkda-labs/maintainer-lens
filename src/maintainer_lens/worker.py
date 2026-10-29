@@ -296,6 +296,7 @@ async def run_worker(
                     settings,
                     source_enabled=request.source_index_id is not None
                     or request.auto_prepare_knowledge,
+                    response_language=request.response_language,
                 )
                 budget, approval = await load_approved_review(
                     session_factory, task_id=request.task_id, claim_token=claim_token
@@ -334,7 +335,7 @@ async def run_worker(
                         claim_token=claim_token,
                         repository=request.repository,
                         issue_number=request.issue_number,
-                        response_language=WORKER_RESPONSE_LANGUAGE,
+                        response_language=request.response_language,
                         history_searcher=history_searcher,
                         analyzer=effective_analyzer,
                         timeout_seconds=WORKER_GRAPH_TIMEOUT_SECONDS,

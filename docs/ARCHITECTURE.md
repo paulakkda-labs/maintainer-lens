@@ -31,6 +31,7 @@ localhost-bound development setup, not a hardened public deployment.
 | Area | Entry points | Responsibility |
 | --- | --- | --- |
 | HTTP and submission | [routes](../src/maintainer_lens/api/routes/investigations.py), [shared contracts](../src/maintainer_lens/schemas/investigation_contracts.py), [submission](../src/maintainer_lens/services/investigation_submission.py) | Validate requests; persist Task + Outbox atomically; return typed details |
+| Web interface | [workspace](../web/src/App.tsx), [polling](../web/src/useTask.ts), [asset serving](../src/maintainer_lens/web.py), [operations](WEB_INTERFACE.md) | Same-origin investigation/records pages, local UI translation, retained task references and safe Markdown preview |
 | Delivery | [Dispatcher](../src/maintainer_lens/services/outbox_dispatcher.py), [handler](../src/maintainer_lens/messaging/handler.py), [consumer](../src/maintainer_lens/messaging/consumer.py) | Confirmed publication, retry/dead-letter routing and ACK ownership |
 | Task lifecycle | [runner](../src/maintainer_lens/investigation_runner.py), [task DB](../src/maintainer_lens/db/investigation_tasks.py), [Worker](../src/maintainer_lens/worker.py) | Claim/lease/status, error classification and process resource assembly |
 | Snapshot and Graph processor | [Issue service](../src/maintainer_lens/services/issue_investigator.py), [processor](../src/maintainer_lens/services/investigation_processor.py) | Commit snapshot data; optionally compose Graph execution and result commit under an existing claim |
@@ -48,6 +49,39 @@ localhost-bound development setup, not a hardened public deployment.
 | Automatic intake/preparation | [URL contract](../src/maintainer_lens/schemas/investigation_url.py), [preparer](../src/maintainer_lens/services/investigation_preparation.py), [binding DB](../src/maintainer_lens/db/investigation_preparation.py), [Source spool](../src/maintainer_lens/services/repository_index_preparation.py) | URL identity, persisted limits, complete compatible index reuse/build and fenced prepared identity |
 | Knowledge budget | [contracts/presets](../src/maintainer_lens/schemas/investigation_budget.py), [submission](../src/maintainer_lens/services/investigation_submission.py) | Resolve profile once, persist immutable task intent snapshot, expose choices and stored limits without modifying Graph budgets |
 | Report evaluation | [review-set loader and observations](../src/maintainer_lens/evaluation/report_quality.py), [HTTP acceptance](../tests/integration/test_deployed_investigation_report_quality.py) | Pure validation/counts and opt-in deployed API checks; no task lifecycle, provider clients or automatic semantic certification |
+
+## Web workspace and report language
+
+React/TypeScript assets are built by Vite into `web/dist` and served by FastAPI
+at `/` and `/logs`. Docker uses a separate Node build stage and a Python-only
+runtime. Source runs start at the repo root after building; Python wheels alone
+do not include this separate Web build. Missing assets cause a Web-only 503,
+leaving API/Swagger independent. The shell restricts content to same-origin assets.
+
+English is the initial UI preference. Phase/error codes are translated locally;
+model reports use the immutable Task language. Changing UI language neither
+mutates work nor translates saved reports; an explicit action resolves another
+language's Task. Original evidence is preserved. Markdown preview excludes raw
+HTML, remote images and unsafe links.
+
+The two workspaces retain independent state. Browser storage holds references,
+with reports fetched from PostgreSQL-backed GETs after refresh/back navigation.
+Active work polls detail/events incrementally. A failed read indicates unknown
+state rather than task failure. Reviews remain explicit and server-eligible.
+
+Migration `3cd7a9b1e528` adds language to the existing Task. Historical production
+rows remain Chinese; future INSERTs and public submissions default to English.
+Old queue messages without language retain Chinese interpretation; new English
+messages preserve it through Outbox publication and retry/review deliveries.
+Chinese URL hashes stay compatible, English gets a separate intent, and prepared
+knowledge remains shareable. Claim preflight, result writer/readback and frozen
+execution enforce language boundaries. Graph/storage JSON versions are unchanged.
+Downgrade refuses while non-Chinese tasks exist.
+
+The maintainer confirmed migration. Local TypeScript/build and seven mocked browser
+tests passed; backend pytest, deployed provider behavior and current CI remain
+separate acceptance. See [Web operations/tests](WEB_INTERFACE.md). No user
+authentication or account isolation is added.
 
 ## Execution flows
 
@@ -83,7 +117,7 @@ attempt; task completion is determined by PostgreSQL status.
 ### Worker dependency assembly
 
 `run_worker()` uses existing settings and factories for prepared History, optional
-Source and structured analysis. The backend profile is Chinese, up to three
+Source and structured analysis. The backend profile defaults to English, with immutable per-task `en/zh` language, up to three
 search rounds, Top-5 per retriever, provider identity `openai-compatible`, a
 120-second whole-Graph deadline and a 60-second deadline per tool step. It binds
 Tool Runner, keeping Query Planner as an independent mutually exclusive option.

@@ -5,6 +5,10 @@ add bounded diagnostic detail; they are not a second task state machine. This
 guide describes the local Compose deployment, without a centralized log service,
 distributed tracing or a demonstrated availability SLA.
 
+The [Web interface](WEB_INTERFACE.md) presents safe task/event records at `/logs`.
+Its language extension has a separate migration; this logging slice did not add
+a table or migration.
+
 ## Locate an investigation by Issue URL
 
 Keep API, Dispatcher and Worker running when inspecting a deployed investigation.

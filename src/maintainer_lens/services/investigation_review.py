@@ -195,7 +195,18 @@ def review_response(
     output_ceiling: int | None = None,
 ) -> ReviewResponse:
     context, decision = decode_context(row), decode_decision(row)
+    task_language = getattr(task, "response_language", None)
+    if (
+        task_language is not None
+        and context.base_execution.response_language != task_language
+    ):
+        raise ValueError("Review language differs from its task")
     if context.partial_result is not None:
+        if (
+            context.partial_result.response_language
+            != context.base_execution.response_language
+        ):
+            raise ValueError("Stage analysis language differs from its review")
         from maintainer_lens.services.investigation_report import (
             render_investigation_report,
         )
@@ -280,7 +291,12 @@ async def decide_review(
         decision_time = await session.scalar(select(func.clock_timestamp()))
         if decision.action != "reject":
             if (
-                configuration_factory(context.base_execution.source_enabled)
+                configuration_factory(context.base_execution.source_enabled).model_copy(
+                    update={
+                        "response_language": getattr(task, "response_language", None)
+                        or "zh"
+                    }
+                )
                 != context.base_execution
             ):
                 raise ReviewConflictError(
@@ -330,6 +346,7 @@ async def decide_review(
                 source_index_id=task.source_index_id,
                 auto_prepare_knowledge=task.auto_prepare_knowledge,
                 generation=task.execution_generation,
+                response_language=getattr(task, "response_language", None) or "zh",
             )
             session.add(
                 InvestigationOutboxEvent(

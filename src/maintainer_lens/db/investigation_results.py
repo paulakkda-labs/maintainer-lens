@@ -108,6 +108,7 @@ async def upsert_investigation_result(
                 InvestigationTask.repository,
                 InvestigationTask.issue_number,
                 effective_source_index_expression(),
+                InvestigationTask.response_language,
             )
             .where(InvestigationTask.id == task_id)
             .with_for_update()
@@ -137,6 +138,7 @@ async def upsert_investigation_result(
         payload["repository"],
         payload["issue_number"],
         UUID(payload["source_index_id"]) if payload["source_index_id"] else None,
+        payload["response_language"],
     ):
         raise InvalidInvestigationResultError("Result does not match its task identity")
 

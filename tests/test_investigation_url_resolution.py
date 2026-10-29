@@ -178,8 +178,10 @@ class _Memory:
         return self.now
 
     @asynccontextmanager
-    async def locked(self, repository, issue_number, budget):
+    async def locked(self, repository, issue_number, budget, *, response_language="zh"):
         key = (repository.casefold(), issue_number, budget["profile"])
+        if response_language != "zh":
+            key += (response_language,)
         async with self.lock:
             self.open_transactions += 1
             lookup = self.lookups.setdefault(
@@ -203,6 +205,7 @@ class _Memory:
     def seed(self, *, status="succeeded", retryable=False, generation=0):
         task = InvestigationTask(
             id="original",
+            response_language="zh",
             repository=REPO,
             issue_number=123,
             auto_prepare_knowledge=True,
@@ -271,6 +274,7 @@ def memory(monkeypatch):
 
 
 async def _resolve(memory, observer=None, **kwargs):
+    kwargs.setdefault("response_language", "zh")
     return await reuse.resolve_investigation_url(
         object(),
         repository=REPO,
@@ -344,15 +348,24 @@ async def test_changed_inputs_preserve_old_report_and_queue_new_task(memory, cha
 
 async def test_model_change_starts_new_task_without_rewriting_frozen_run(memory):
     memory.seed()
+    run = memory.records[(InvestigationGraphRun, "original")]
+    previous_execution = run.execution_payload.copy()
+    previous_fingerprint = run.fingerprint
     result = await reuse.resolve_investigation_url(
         object(),
         repository=REPO,
         issue_number=123,
+        response_language="zh",
         observer=AsyncMock(return_value=_observation()),
         configuration_factory=lambda: _config(llm_model="new-model"),
     )
     assert result.decision == "created" and result.task_id != "original"
+    assert result.response_language == "zh"
+    assert result.previous_task_id == result.report_task_id == "original"
     assert result.freshness.reason_code == "execution_changed"
+    assert run.execution_payload == previous_execution
+    assert run.fingerprint == previous_fingerprint
+    assert run.request_payload == _request().model_dump(mode="json")
 
 
 @pytest.mark.parametrize("previous_version", ["investigation-v1", "investigation-v2"])
@@ -585,3 +598,29 @@ async def test_delivery_generation_does_not_consume_user_recovery_allowance(memo
     result = await _resolve(memory)
     assert result.decision == "resumed" and result.generation == 6
     assert task.user_recovery_count == 3 and task.budget_resume_count == 3
+
+
+async def test_languages_have_independent_active_tasks_and_preserve_default_english(
+    memory,
+):
+    english = await reuse.resolve_investigation_url(
+        object(), repository=REPO, issue_number=123
+    )
+    chinese = await _resolve(memory, response_language="zh")
+    assert english.response_language == "en" and chinese.response_language == "zh"
+    assert english.task_id != chinese.task_id and len(memory.outbox) == 2
+    repeated = await _resolve(memory, response_language="en")
+    assert repeated.task_id == english.task_id and repeated.decision == "active"
+    assert len(memory.outbox) == 2
+    assert (
+        memory.records[(InvestigationTask, english.task_id)].response_language == "en"
+    )
+
+
+async def test_concurrent_english_submissions_dispatch_only_once(memory):
+    results = await asyncio.gather(
+        *[_resolve(memory, response_language="en") for _ in range(8)]
+    )
+    assert len({result.task_id for result in results}) == 1
+    assert len(memory.outbox) == 1
+    assert memory.outbox[0].payload["response_language"] == "en"

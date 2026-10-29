@@ -61,6 +61,11 @@ async def dispatch_one_outbox_event(
                 source_index_id=message.source_index_id,
                 auto_prepare_knowledge=message.auto_prepare_knowledge,
                 **({"generation": message.generation} if message.generation else {}),
+                **(
+                    {"response_language": message.response_language}
+                    if message.response_language != "zh"
+                    else {}
+                ),
             )
 
     except Exception:
