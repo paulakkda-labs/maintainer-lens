@@ -12,6 +12,14 @@ from maintainer_lens.messaging.consumer import consume_investigations
 from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
 from maintainer_lens.messaging.topology import DEAD_ROUTING_KEY
 
+
+@pytest.fixture(autouse=True)
+def legacy_generation_lookup(monkeypatch):
+    monkeypatch.setattr(
+        handler_module, "get_investigation_task_generation", AsyncMock(return_value=0)
+    )
+
+
 pytestmark = pytest.mark.anyio
 
 

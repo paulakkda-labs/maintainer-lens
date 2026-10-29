@@ -12,6 +12,10 @@ from maintainer_lens.db.models.investigation_checkpoint import (
     InvestigationGraphRun,
 )
 from maintainer_lens.db.models.investigation_result import InvestigationResultRecord
+from maintainer_lens.db.models.investigation_reuse import (
+    InvestigationTaskEvent,
+    InvestigationUrlLookup,
+)
 from maintainer_lens.db.models.repository_history import RepositoryHistoryRecord
 from maintainer_lens.db.models.repository_history_backfill import (
     RepositoryHistoryBackfillState,
@@ -36,6 +40,8 @@ __all__ = [
     "InvestigationGraphRun",
     "InvestigationCheckpoint",
     "InvestigationCheckpointWrite",
+    "InvestigationTaskEvent",
+    "InvestigationUrlLookup",
     "RepositoryIndex",
     "RepositoryChunk",
     "RepositoryIndexBuildLease",

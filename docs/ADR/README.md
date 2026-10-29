@@ -17,8 +17,11 @@ Keep context, decisions and consequences here. Development branch names, test-se
 
 | [2026-10-29-claim-fenced-graph-checkpoints.md](2026-10-29-claim-fenced-graph-checkpoints.md) | Accepted | Task-linked frozen execution, async SQLAlchemy Saver and claim-fenced recovery |
 
+| [2026-10-29-url-resolution-and-delivery-generations.md](2026-10-29-url-resolution-and-delivery-generations.md) | Accepted | URL arbitration, scoped freshness, generation-fenced user recovery and progress/error readback |
+
 The Worker supports automatic preparation, explicit knowledge selection and
-checkpoint recovery. GET derives Markdown without extra inference. The original
-Runner, task status, claim fencing and ACK semantics remain authoritative. M4 is
-merged through PR #14. New checkpoint migration/test acceptance is pending; HITL,
-trusted memory and private-repository access remain future work.
+checkpoint recovery. M4 is merged through PR #14 and checkpoint recovery through
+PR #15 with maintainer-confirmed tests. The maintainer reports URL reuse/progress local tests passed and services started;
+its PR review, CI and merge remain pending. The original Runner, task status, claim fencing
+and ACK semantics remain authoritative. HITL, trusted memory and private access
+remain future work.

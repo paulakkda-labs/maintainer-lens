@@ -1,6 +1,6 @@
 # MaintainerLens Roadmap
 
-> Updated 2026-10-29. M4 backend integration is merged through PR #14; the maintainer confirmed regressions, real-infrastructure checks, the automatic paid smoke and the CI fix. M5 checkpoint/recovery production code and tests are implemented on the current feature branch; migration and pytest acceptance have not been run by the assistant. Implementation does not imply deployment.
+> Updated 2026-10-29. M4 backend integration is merged through PR #14; the maintainer confirmed regressions, real-infrastructure checks, the automatic paid smoke and the CI fix. M5 checkpoint/recovery is merged in PR #15 with maintainer-confirmed acceptance. URL resolution/reuse, controlled recovery, scoped freshness and progress/error readback are implemented in the next slice; the maintainer reports local tests passed and services started. PR review, CI and merge remain pending.
 
 ## Product vision
 
@@ -15,7 +15,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
 | M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
 | M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | Completed/merged through PR #14; maintainer-confirmed regression/infrastructure/paid acceptance; broader report-quality evaluation remains M6 |
-| M5 | Workflow checkpoints, state recovery, durable memory, HITL | In progress — checkpoint/recovery slice implemented, acceptance pending; review/memory pending |
+| M5 | Workflow checkpoints, state recovery, durable memory, HITL | In progress — checkpoint/recovery merged; URL reuse locally accepted, PR/CI pending; review/memory pending |
 | M6 | V1 release readiness, evaluation, security, Web UI | Planned |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
 
@@ -213,7 +213,20 @@ release acceptance concern; citation validity is not proof of correctness.
   Runner; preserve saved rounds, segment deadline and existing delivery budgets.
 - [x] Supply complete offline, opt-in PostgreSQL and real MQ crash/redelivery tests;
   document in-flight duplicate-call windows and result/status commit ordering.
-- [ ] Maintainer applies migration f9a4d6e8b205 and runs pytest acceptance.
+- [x] Maintainer applied the checkpoint migration and confirmed acceptance passed.
+- [x] Git contains checkpoint squash merge PR #15; deployment is not implied.
+
+### URL product workflow bridge — maintainer-confirmed local acceptance, PR/CI pending
+
+- [x] Resolve repeated URL intent into active/cached/recovered/new investigation.
+- [x] Coordinate concurrent checks and submissions without HTTP inside SQL locks.
+- [x] Preserve a successful report independently of the current Task.
+- [x] Scope freshness to Issue metadata, default-branch commit and configuration;
+  show GitHub state first while retaining technical evidence and limitations.
+- [x] Add bounded user recovery generations, stale-delivery fencing and transactional
+  Outbox publication under the original Runner.
+- [x] Persist claim-fenced phases and safe errors with bounded API history.
+- [x] Maintainer reports local tests passed and application services started after the migration/testing workflow. The assistant did not execute these checks.
 - [ ] Reviewed PR, observed green CI and squash merge.
 
 ### Later rounds: on-demand human decisions and trusted memory

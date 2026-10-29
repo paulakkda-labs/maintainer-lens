@@ -7,7 +7,10 @@ from aio_pika.abc import AbstractIncomingMessage, AbstractRobustExchange
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from maintainer_lens.db.investigation_tasks import get_investigation_task_status
+from maintainer_lens.db.investigation_tasks import (
+    get_investigation_task_generation,
+    get_investigation_task_status,
+)
 from maintainer_lens.investigation_runner import (
     InvestigationClaimUnavailableError,
     LeaseLostError,
@@ -63,6 +66,7 @@ async def process_investigation_request(
     session_factory: async_sessionmaker[AsyncSession],
     processor: Callable[[str], Awaitable[None]],
     final_attempt: bool = False,
+    event_recorder=None,
 ) -> None:
     """Execute an investigation or determine whether its message needs retrying."""
     try:
@@ -71,6 +75,14 @@ async def process_investigation_request(
             task_id=request.task_id,
             processor=processor,
             final_attempt=final_attempt,
+            **(
+                {"expected_generation": request.generation}
+                if request.generation
+                else {}
+            ),
+            **(
+                {"event_recorder": event_recorder} if event_recorder is not None else {}
+            ),
         )
 
     except (InvestigationClaimUnavailableError, LeaseLostError, ExceptionGroup) as exc:
@@ -79,6 +91,16 @@ async def process_investigation_request(
             if remaining is not None:
                 raise
         async with session_factory() as session:
+            current_generation = await get_investigation_task_generation(
+                session, request.task_id
+            )
+            if current_generation is not None:
+                if current_generation > request.generation:
+                    return  # A late delivery must never restart a newer generation.
+                if current_generation < request.generation:
+                    raise PermanentInvestigationError(
+                        "Message generation is ahead of its task"
+                    ) from exc
             status = await get_investigation_task_status(
                 session=session,
                 task_id=request.task_id,

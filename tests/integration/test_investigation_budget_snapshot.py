@@ -10,7 +10,7 @@ import os
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 from uuid import UUID
 
 import httpx
@@ -248,6 +248,8 @@ async def test_post_persists_snapshot_and_get_reads_it_without_resolving_again(
             "get_investigation_details",
             AsyncMock(return_value=(task, None, None)),
         )
+        progress = AsyncMock(return_value=(None, None))
+        monkeypatch.setattr(routes, "read_latest_progress", progress)
         monkeypatch.setattr(
             submission,
             "make_knowledge_preparation_budget",
@@ -258,6 +260,10 @@ async def test_post_persists_snapshot_and_get_reads_it_without_resolving_again(
         assert detail.json()["knowledge_budget"] == expected
         assert (
             detail.json()["result"] is None and detail.json()["report_markdown"] is None
+        )
+        assert detail.json()["progress"] is None and detail.json()["last_error"] is None
+        progress.assert_awaited_once_with(
+            ANY, task.id, generation=0, task_status="pending"
         )
 
 

@@ -238,6 +238,7 @@ async def test_outbox_dispatch_preserves_uuid_and_closes_claim_transaction(monke
         event_type="investigation.requested",
         payload=message.model_dump(mode="json"),
         delivery_token="token",
+        generation=0,
     )
     monkeypatch.setattr(
         dispatcher, "claim_next_outbox_event", AsyncMock(return_value=claimed)

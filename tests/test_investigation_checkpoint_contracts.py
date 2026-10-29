@@ -183,8 +183,9 @@ def test_checkpoint_migration_is_the_single_connected_head():
         if "revision" in values:
             revisions[values["revision"]] = values["down_revision"]
     assert revisions["f9a4d6e8b205"] == "e8b3c7d9a204"
-    assert set(revisions) - set(revisions.values()) == {"f9a4d6e8b205"}
-    revision = "f9a4d6e8b205"
+    heads = set(revisions) - set(revisions.values())
+    assert len(heads) == 1
+    revision = next(iter(heads))
     seen = set()
     while revision is not None:
         assert revision not in seen

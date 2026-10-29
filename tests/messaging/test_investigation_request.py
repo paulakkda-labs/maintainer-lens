@@ -11,6 +11,13 @@ from maintainer_lens.investigation_runner import (
 from maintainer_lens.messaging.schemas import InvestigationRequestedMessage
 
 
+@pytest.fixture(autouse=True)
+def legacy_generation_lookup(monkeypatch):
+    monkeypatch.setattr(
+        handler_module, "get_investigation_task_generation", AsyncMock(return_value=0)
+    )
+
+
 @pytest.fixture
 def investigation_request() -> InvestigationRequestedMessage:
     """Create a valid investigation request."""

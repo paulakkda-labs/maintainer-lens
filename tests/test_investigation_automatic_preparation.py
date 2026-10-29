@@ -131,7 +131,19 @@ async def test_url_api_queues_auto_mode_with_default_budget(monkeypatch):
             auto_prepare_knowledge=True,
         )
     )
-    monkeypatch.setattr(routes, "create_investigation_submission", create)
+    from maintainer_lens.schemas.investigation_reuse import (
+        InvestigationFreshness,
+        ResolveInvestigationResponse,
+    )
+
+    create.return_value = ResolveInvestigationResponse(
+        task_id="task",
+        status="pending",
+        generation=0,
+        decision="created",
+        freshness=InvestigationFreshness(),
+    )
+    monkeypatch.setattr(routes, "resolve_investigation_url", create)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:
@@ -147,7 +159,6 @@ async def test_url_api_queues_auto_mode_with_default_budget(monkeypatch):
         factory,
         repository=REPOSITORY,
         issue_number=123,
-        auto_prepare_knowledge=True,
         knowledge_budget_profile="standard",
     )
     assert parse_issue_url("https://github.com/org/repo/issues/123").issue_number == 123

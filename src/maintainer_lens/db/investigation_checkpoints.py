@@ -63,7 +63,7 @@ def _json_snapshot(value: Any) -> Any:
         ) from exc
 
 
-def _decode_run(record: InvestigationGraphRun) -> FrozenInvestigationRun:
+def decode_frozen_graph_run(record: InvestigationGraphRun) -> FrozenInvestigationRun:
     if (
         type(record.storage_version) is not int
         or record.storage_version != CHECKPOINT_STORAGE_VERSION
@@ -143,7 +143,7 @@ class InvestigationCheckpointStore:
             if identity is None:
                 raise LeaseLostError("Investigation task is missing")
             record = await session.get(InvestigationGraphRun, self.task_id)
-            run = _decode_run(record) if record is not None else None
+            run = decode_frozen_graph_run(record) if record is not None else None
             if require_run and run is None:
                 raise InvalidInvestigationCheckpointError(
                     "Frozen Graph execution is missing"

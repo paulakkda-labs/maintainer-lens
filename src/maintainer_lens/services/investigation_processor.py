@@ -36,6 +36,9 @@ from maintainer_lens.services.investigation_checkpoint_execution import (
 )
 from maintainer_lens.services.investigation_execution import execute_graph_investigation
 from maintainer_lens.services.investigation_preparation import KnowledgePreparer
+from maintainer_lens.services.investigation_progress import (
+    InvestigationProgressReporter,
+)
 from maintainer_lens.services.issue_investigator import investigate_issue
 
 
@@ -61,6 +64,7 @@ async def process_graph_investigation(
     knowledge_preparer: KnowledgePreparer | None = None,
     checkpoint_store: InvestigationCheckpointStore | None = None,
     checkpoint_config: GraphCheckpointConfig | None = None,
+    progress: InvestigationProgressReporter | None = None,
 ) -> None:
     """Process an existing claim, returning only after its result commits.
 
@@ -167,6 +171,8 @@ async def process_graph_investigation(
     if frozen_run is not None:
         request = frozen_run.request
     else:
+        if progress is not None:
+            await progress.phase("snapshot")
         snapshot = await investigate_issue(
             http_client=http_client,
             session_factory=session_factory,
@@ -213,6 +219,7 @@ async def process_graph_investigation(
             source_searcher=source_searcher,
             query_planner=query_planner,
             tool_search_runner=tool_search_runner,
+            **({"node_observer": progress.node} if progress is not None else {}),
         )
     else:
         result = await execute_graph_investigation(
@@ -226,6 +233,8 @@ async def process_graph_investigation(
             tool_search_runner=tool_search_runner,
         )
 
+    if progress is not None:
+        await progress.phase("finalizing", result.search_round)
     async with session_factory() as session:
         async with session.begin():
             saved = await upsert_investigation_result(

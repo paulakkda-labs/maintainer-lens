@@ -48,6 +48,8 @@ async def dispatch_one_outbox_event(
 
         if message.task_id != claimed.task_id:
             raise ValueError("Outbox payload task ID does not match event")
+        if message.generation != claimed.generation:
+            raise ValueError("Outbox payload generation does not match event")
 
         # No database transaction is held while publishing.
         async with asyncio.timeout(PUBLISH_TIMEOUT_SECONDS):
@@ -58,6 +60,7 @@ async def dispatch_one_outbox_event(
                 issue_number=message.issue_number,
                 source_index_id=message.source_index_id,
                 auto_prepare_knowledge=message.auto_prepare_knowledge,
+                **({"generation": message.generation} if message.generation else {}),
             )
 
     except Exception:

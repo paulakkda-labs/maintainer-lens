@@ -38,6 +38,15 @@ class InvestigationTask(Base):
     issue_number: Mapped[int] = mapped_column(
         nullable=False,
     )
+    execution_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    failure_retryable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    freshness_payload: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     # Preserve the requested identity independently of index retention.
     source_index_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
@@ -90,6 +99,13 @@ class InvestigationTask(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "execution_generation >= 0", name="ck_tasks_execution_generation"
+        ),
+        CheckConstraint(
+            "freshness_payload IS NULL OR jsonb_typeof(freshness_payload) = 'object'",
+            name="ck_tasks_freshness_object",
+        ),
         CheckConstraint(
             "issue_number > 0",
             name="ck_investigation_tasks_issue_number_positive",
@@ -156,10 +172,16 @@ class InvestigationOutboxEvent(Base):
 
     __tablename__ = "investigation_outbox_events"
 
+    generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
     __table_args__ = (
+        CheckConstraint("generation >= 0", name="ck_outbox_generation"),
         UniqueConstraint(
             "task_id",
             "event_type",
+            "generation",
             name="uq_investigation_outbox_task_event",
         ),
         Index(

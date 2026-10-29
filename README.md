@@ -109,9 +109,11 @@ embeddings with provider identity `openai-compatible`. This identity is the
 stored backend label, not a requirement to use a particular vendor.
 
 The Worker validates required provider configuration before opening the broker
-connection. Compose forwards these settings only to the Worker; API and
-Dispatcher do not require provider credentials. An explicitly injected
-investigator also bypasses default provider assembly.
+connection. Compose shares non-secret model/endpoint/dimension settings with the
+API so URL freshness checks compare the same execution identity. API and Worker
+receive the optional GitHub token; model API keys remain Worker-only. Dispatcher
+does not require provider credentials. An explicitly injected investigator also
+bypasses default provider assembly.
 
 The backend profile uses at most five hits per retriever, up to three search
 rounds, Chinese analysis, a 120-second whole-Graph deadline and 60 seconds per
@@ -496,7 +498,7 @@ Use the URL endpoint to request automatic mode; do not toggle task rows manually
 
 ```bash
 uv run alembic upgrade head
-uv run alembic current  # expected head: e8b3c7d9a204
+uv run alembic current  # expected head: 0ab5e7f9c306
 
 # Offline contracts, DDL and API checks; no external services
 RUN_POSTGRES_INTEGRATION=0 RUN_RABBITMQ_INTEGRATION=0 uv run pytest -q \
@@ -631,8 +633,8 @@ for each change. M4 backend integration is merged through PR #14.
 
 Before starting the updated Worker, stop older Worker instances and apply the
 additive migration manually through the normal environment. No new dependency,
-`.env` setting or driver is required. The new head is `f9a4d6e8b205`, extending
-`e8b3c7d9a204`. This migration creates only Graph run/checkpoint/pending-write
+`.env` setting or driver is required. Checkpoint revision `f9a4d6e8b205` extends
+`e8b3c7d9a204`; current head is listed in the URL reuse section below. This migration creates only Graph run/checkpoint/pending-write
 tables; it does not backfill completed or legacy tasks.
 
 ```bash
@@ -685,8 +687,103 @@ persisted; this is not an exactly-once or cumulative monetary-budget guarantee.
 
 Normal reports remain automatic. Budget-triggered human decisions, review APIs,
 waiting states and trusted memory are planned separately. No invalid or truncated
-result becomes acceptable simply because progress was saved. These new M5 tests
-have been supplied but have not yet been executed by the assistant.
+result becomes acceptable simply because progress was saved. The maintainer
+confirmed checkpoint acceptance passed before PR #15; rerun it after the new
+URL migration. The assistant did not execute pytest.
+
+### URL reuse and progress acceptance
+
+`POST /investigations/from-url` now resolves repeated URL intent. It returns
+`decision` with the selected `task_id`/`generation`, scoped `freshness`, and an
+available report identified by `report_task_id`:
+
+| Decision | HTTP | Meaning |
+| --- | --- | --- |
+| `created` | 202 | New investigation; changed inputs can include an explicitly identified historical report |
+| `active` | 202 | Existing queued/running investigation; no duplicate dispatch |
+| `resumed` | 202 | Same failed Task queued under a new delivery generation |
+| `checking` | 202 | Another request owns the metadata check; an old report may be displayed |
+| `reused` | 200 | Saved successful report matches the checked input scope |
+| `unverified` | 200 | Saved report is available, but latest metadata/configuration could not be verified |
+| `blocked` | 200 | Existing terminal investigation cannot be automatically recovered; inspect details |
+
+Recovery requires a recorded retryable failure and permits three user recoveries
+per Task. Each generation keeps the existing MQ retry limit; saved Graph rounds
+and input/configuration are retained. A changed preparation profile is different
+intent. Relevant Issue metadata, default-branch revision or execution changes
+create a new Task; they do not modify old checkpoint inputs.
+
+Terminal reuse checks Issue title/body/state/updated_at and default-branch commit,
+with a 15-second external metadata budget. No embedding or model call is made for
+this check. The status describes the check time, not perpetual freshness or
+complete discovery of linked/unlinked PRs/discussions. GitHub closure is displayed
+first in the report, while technical repair evidence remains separately stated.
+Check failures retain a report with `unknown`, including a warning in Markdown.
+A prior successful report remains accessible when an updated investigation fails.
+
+GET details adds `generation`, `progress`, historical `last_error`, `freshness`,
+`previous_report_task_id` and `previous_report_markdown`. Current result/report
+fields still require Task success. Poll `/investigations/{task_id}/events?after=0&limit=50`
+for chronological phases/errors. `next_after` indicates another page; polling
+clients retain the last returned `event_id` even when no further page exists.
+The API does not yet implement push notifications or a product frontend.
+
+Stop all older API/Dispatcher/Worker instances, manually apply the new migration,
+then restart matching code. No new `.env` setting or dependency is needed.
+
+For an already-running Compose stack, keep infrastructure running and use the
+freshly built shared image for the one-off migration:
+
+```bash
+docker compose stop api dispatcher worker
+docker compose build migrate
+docker compose run --rm --no-deps migrate
+docker compose run --rm --no-deps migrate alembic current
+# Expected head: 0ab5e7f9c306. Keep applications stopped while running DB/MQ tests.
+# After migrations and acceptance succeed:
+docker compose up -d --no-deps api dispatcher worker
+docker compose ps -a
+```
+
+`migrate` already runs `alembic upgrade head`. Building first includes the new
+migration/source; restarting an old image alone does not update it. The final
+`--no-deps` uses the infrastructure and schema already prepared above. Stop/start
+preserves named data volumes. Applying DDL while old applications are running can
+wait for locks and leaves mixed message/configuration versions; this change uses
+a short application maintenance window rather than a rolling-upgrade guarantee.
+
+```bash
+uv run --locked alembic upgrade head
+uv run --locked alembic current
+# Expected head: 0ab5e7f9c306, extending f9a4d6e8b205.
+
+uv run --locked pytest -q \
+  tests/test_investigation_url_resolution.py \
+  tests/test_investigation_progress_contracts.py \
+  tests/api/test_investigations.py \
+  tests/test_worker_production_wiring.py \
+  tests/messaging/test_investigation_request.py \
+  tests/messaging/test_delivery_safety.py \
+  tests/agents/test_investigation_analysis.py
+
+RUN_POSTGRES_INTEGRATION=1 uv run --locked pytest -q \
+  tests/integration/test_investigation_url_reuse_postgres.py \
+  tests/integration/test_investigation_checkpoint_persistence.py \
+  tests/integration/test_investigation_result_readback.py \
+  tests/integration/test_investigation_submission.py
+
+RUN_POSTGRES_INTEGRATION=1 RUN_RABBITMQ_INTEGRATION=1 \
+  uv run --locked pytest -q tests/integration/test_worker_graph_source_e2e.py
+
+uv run --locked pytest -q
+```
+
+The new MQ scenario forces one terminal transient analysis failure, resubmits the
+same URL, dispatches a new Outbox generation and recovers the same checkpoint
+thread. It also injects a stale delivery and checks it does not consume the new
+claim. SQL/MQ are real; providers are simulated. Existing paid smoke flags remain
+independently opt-in. These new acceptance tests have not yet been executed by
+the assistant. The maintainer reports local tests passed and services started; PR review, CI and merge remain pending. No automatic migration is performed by the application.
 
 ### Repository retrieval evaluation
 
@@ -757,7 +854,8 @@ replace the local Compose/full GitHub API smoke test.
    }
    ```
 
-3. Save the returned `task_id` (HTTP **202 Accepted**, initially `pending`).
+3. Keep the returned `task_id`. New/active work returns HTTP **202**; a reusable
+   or unverified saved report can return HTTP **200**. Inspect `decision` and `freshness`.
 4. Poll `GET /investigations/{task_id}` until `succeeded` or `failed`.
 5. A success exposes `issue`, `result` and `report_markdown`. Both supported
    `next_step` values are legal: insufficient evidence is reported explicitly.
@@ -773,7 +871,7 @@ not a product report viewer or file-export endpoint.
 
 ## Current milestone and contribution workflow
 
-M4 backend integration is merged through PR #14, including URL intake, automatic knowledge preparation, bounded tools and saved reports. The maintainer confirmed local regressions, infrastructure and paid acceptance, and the CI fix. M5 checkpoint/recovery code and acceptance tests are implemented in the current slice; its migration and pytest acceptance are pending. On-demand human decisions and trusted memory remain later M5 work. Before changes, review `docs/ARCHITECTURE.md`, current source and relevant tests. M6 covers release reliability, representative report evaluation, UI and a Chinese README; V2 adds private repository authorization.
+M4 backend integration is merged through PR #14, including URL intake, automatic knowledge preparation, bounded tools and saved reports. The maintainer confirmed local regressions, infrastructure and paid acceptance, and the CI fix. M5 checkpoint/recovery is merged in PR #15 with maintainer-confirmed tests. The current slice implements URL reuse, controlled recovery, scoped freshness and progress/error readback; the maintainer reports local tests passed and services started, while PR review, CI and merge remain pending. On-demand human decisions and trusted memory remain later M5 work. Before changes, review `docs/ARCHITECTURE.md`, current source and relevant tests. M6 covers release reliability, representative report evaluation, UI and a Chinese README; V2 adds private repository authorization.
 
 Use `feat/**` / `fix/**` / `docs/**` branches and reviewed squash-merge PRs; do not push to `main` directly. Before merging run Ruff, default pytest, appropriate opt-in integration tests and GitHub CI. Clearly label which integration levels actually ran. See [Roadmap](docs/ROADMAP.md) for milestones and [ADR](docs/ADR/) for established technical decisions.
 

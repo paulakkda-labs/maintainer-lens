@@ -7,6 +7,7 @@ from langgraph.graph.state import CompiledStateGraph
 from maintainer_lens.agents.investigation.analysis_node import (
     make_analysis_node,
 )
+from maintainer_lens.agents.investigation.progress import NodeObserver, observe_node
 from maintainer_lens.agents.investigation.query_planning import (
     FollowUpQueryPlanner,
     apply_planned_query,
@@ -56,8 +57,12 @@ def build_investigation_graph(
     query_planner: FollowUpQueryPlanner | None = None,
     tool_search_runner: ToolSearchRunner | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    node_observer: NodeObserver | None = None,
 ) -> CompiledStateGraph:
     """Build retrieval, analysis, and optional LLM query planning."""
+
+    if node_observer is not None and not callable(node_observer):
+        raise ValueError("node_observer must be callable")
 
     if type(max_search_rounds) is not int or not 1 <= max_search_rounds <= 3:
         raise ValueError("max_search_rounds must be between 1 and 3")
@@ -84,11 +89,14 @@ def build_investigation_graph(
 
     builder = StateGraph(InvestigationState)
 
-    builder.add_node(
+    def add_node(name, action):
+        builder.add_node(name, observe_node(name, action, node_observer))
+
+    add_node(
         "prepare_query",
         make_prepare_query_node(require_source_index=source_searcher is not None),
     )
-    builder.add_node(
+    add_node(
         "search_history",
         make_history_search_node(history_searcher),
     )
@@ -99,7 +107,7 @@ def build_investigation_graph(
     last_search_node = "search_history"
 
     if source_searcher is not None:
-        builder.add_node(
+        add_node(
             "search_source",
             make_source_search_node(source_searcher),
         )
@@ -107,17 +115,17 @@ def build_investigation_graph(
         last_search_node = "search_source"
 
     if analyzer is not None:
-        builder.add_node(
+        add_node(
             "analyze_evidence",
             make_analysis_node(analyzer),
         )
         builder.add_edge(last_search_node, "analyze_evidence")
 
-        builder.add_node(
+        add_node(
             "mark_ready_for_report",
             mark_ready_for_report,
         )
-        builder.add_node(
+        add_node(
             "mark_more_evidence_needed",
             mark_more_evidence_needed,
         )
@@ -129,7 +137,7 @@ def build_investigation_graph(
 
         if max_search_rounds > 1:
             if tool_search_runner is not None:
-                builder.add_node(
+                add_node(
                     "execute_search_tool",
                     make_tool_search_node(tool_search_runner),
                 )
@@ -146,11 +154,11 @@ def build_investigation_graph(
                 path_map["tool"] = "execute_search_tool"
 
             elif query_planner is not None:
-                builder.add_node(
+                add_node(
                     "plan_follow_up_query",
                     make_query_planning_node(query_planner),
                 )
-                builder.add_node(
+                add_node(
                     "apply_planned_query",
                     apply_planned_query,
                 )
@@ -172,7 +180,7 @@ def build_investigation_graph(
                 path_map["plan"] = "plan_follow_up_query"
 
             else:
-                builder.add_node(
+                add_node(
                     "prepare_follow_up_query",
                     prepare_follow_up_query,
                 )

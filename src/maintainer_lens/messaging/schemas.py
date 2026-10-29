@@ -21,6 +21,9 @@ class InvestigationRequestedMessage(BaseModel):
     issue_number: int = Field(gt=0, strict=True)
     source_index_id: UUID | None = None
     auto_prepare_knowledge: bool = Field(default=False, strict=True)
+    generation: int = Field(
+        default=0, ge=0, strict=True, exclude_if=lambda value: value == 0
+    )
 
     model_config = ConfigDict(extra="forbid")
 
