@@ -142,10 +142,11 @@ async def read_latest_progress(
         InvestigationTaskEvent.generation <= generation,
     )
     kinds = {
-        "pending": ("queued", "retry_scheduled"),
+        "pending": ("queued", "retry_scheduled", "review_approved"),
         "running": ("started", "progress"),
         "succeeded": ("completed",),
-        "failed": ("failed",),
+        "failed": ("failed", "review_rejected"),
+        "waiting_review": ("review_requested",),
     }
     latest = await session.scalar(
         statement.where(

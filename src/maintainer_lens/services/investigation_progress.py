@@ -62,7 +62,7 @@ def describe_failure(error: Exception, *, retryable: bool) -> InvestigationError
             limited = getattr(leaf, "finish_reason", None) == "length"
             return InvestigationErrorInfo(
                 code="analysis_output_limit" if limited else "analysis_incomplete",
-                message="Model analysis reached its output allowance."
+                message="Model generation reached an output or context allowance."
                 if limited
                 else "Model generation did not complete a valid analysis.",
                 retryable=retryable,

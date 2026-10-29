@@ -390,6 +390,7 @@ async def test_postgres_recovery_limit_and_permanent_error_do_not_dispatch_again
     async with scope.factory() as session, session.begin():
         task = await session.get(InvestigationTask, original.task_id)
         task.execution_generation = 3
+        task.user_recovery_count = 3
     blocked = await _resolve(scope)
     assert blocked.decision == "blocked" and blocked.generation == 3
     async with scope.factory() as session:

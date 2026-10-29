@@ -193,6 +193,8 @@ async def resolve_investigation_url(
         if task is None:
             task = await _create(session, lookup, repository, issue_number, budget)
             return await _response(session, lookup, task, "created")
+        if task.status == "waiting_review":
+            return await _response(session, lookup, task, "awaiting_review")
         if task.status in ("pending", "running"):
             return await _response(session, lookup, task, "active")
         if (
@@ -271,6 +273,8 @@ async def resolve_investigation_url(
             if task is None:
                 task = await _create(session, lookup, repository, issue_number, budget)
             decision = "active" if task.status in ("pending", "running") else "blocked"
+            if task.status == "waiting_review":
+                decision = "awaiting_review"
             if task.status == "succeeded":
                 decision = (
                     "reused"
@@ -461,11 +465,11 @@ async def resolve_investigation_url(
 
         if (
             not task.failure_retryable
-            or task.execution_generation >= MAX_USER_RECOVERIES
+            or task.user_recovery_count >= MAX_USER_RECOVERIES
         ):
             reason = (
                 "recovery_limit"
-                if task.execution_generation >= MAX_USER_RECOVERIES
+                if task.user_recovery_count >= MAX_USER_RECOVERIES
                 else "failure_not_recoverable"
             )
             task.freshness_payload = freshness.model_copy(
@@ -476,6 +480,7 @@ async def resolve_investigation_url(
             ).model_dump(mode="json")
             return await _response(session, lookup, task, "blocked")
         task.execution_generation += 1
+        task.user_recovery_count += 1
         task.status, task.claim_token, task.lease_expires_at = "pending", None, None
         task.failure_retryable = False
         message = InvestigationRequestedMessage(

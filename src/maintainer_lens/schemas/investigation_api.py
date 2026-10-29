@@ -22,6 +22,7 @@ InvestigationStatus = Literal[
     "running",
     "succeeded",
     "failed",
+    "waiting_review",
 ]
 
 

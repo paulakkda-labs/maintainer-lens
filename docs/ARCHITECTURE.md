@@ -38,6 +38,7 @@ localhost-bound development setup, not a hardened public deployment.
 | Durable Graph execution | [execution contract](../src/maintainer_lens/schemas/investigation_checkpoint.py), [resume service](../src/maintainer_lens/services/investigation_checkpoint_execution.py), [Saver](../src/maintainer_lens/agents/investigation/checkpointing.py), [SQL store](../src/maintainer_lens/db/investigation_checkpoints.py), [models](../src/maintainer_lens/db/models/investigation_checkpoint.py) | Frozen input/configuration, task-scoped checkpoints/pending writes and claim-fenced recovery |
 | URL reuse and freshness | [resolver](../src/maintainer_lens/services/investigation_url_reuse.py), [arbitration](../src/maintainer_lens/db/investigation_reuse.py), [metadata observation](../src/maintainer_lens/services/investigation_freshness.py), [shared execution profile](../src/maintainer_lens/services/investigation_configuration.py) | Resolve active/cached/recoverable/changed URL intent without mixing versions |
 | Progress and errors | [reporter](../src/maintainer_lens/services/investigation_progress.py), [event store](../src/maintainer_lens/db/investigation_progress.py), [event models](../src/maintainer_lens/db/models/investigation_reuse.py) | Claim-fenced phases, safe processing errors, delivery generation and paginated API history |
+| Human review | [contracts](../src/maintainer_lens/schemas/investigation_review.py), [service](../src/maintainer_lens/services/investigation_review.py), [store](../src/maintainer_lens/db/investigation_review.py), [routes](../src/maintainer_lens/api/routes/investigation_reviews.py) | Claim-fenced pause, immutable budget decisions, idempotent Outbox resume and validated partial acceptance |
 | Source knowledge | [indexing](../src/maintainer_lens/services/repository_indexing.py), [search](../src/maintainer_lens/services/repository_search.py) | Commit-pinned indexes, build leases, exact semantic/optional keyword retrieval |
 | Investigation Source selection | [selection boundary](../src/maintainer_lens/services/investigation_source_index.py), [adapter](../src/maintainer_lens/agents/investigation/retrieval.py) | Validate an explicit or backend-selected UUID against repository, ready status and full embedding identity; return immutable metadata, without building or choosing latest |
 | History knowledge | [preparation](../src/maintainer_lens/services/repository_history_pipeline.py), [sync](../src/maintainer_lens/services/repository_history_sync.py), [semantic retrieval](../src/maintainer_lens/services/repository_history_semantic_search.py) | Bounded collection/enrichment/indexing and repository-scoped evidence retrieval |
@@ -263,6 +264,7 @@ calling retrieval services that own their own transaction scopes.
 | Submission | Low-level Task + Outbox commit together; URL lookup arbitration and a new generation/event commit atomically |
 | Outbox dispatch | Claim commit → network publish → guarded finalization commit |
 | Runner | Claim, heartbeat and terminal updates use independent short transactions |
+| Human review | Runner suspension: request/event/conditional lease release in one transaction; decision: Task lock, decision/counters/Outbox/event commit together, no provider I/O |
 | Snapshot | Caller-owned short fenced write transaction |
 | Graph progress | Each run/checkpoint/pending-write callback owns a short Session/transaction; lock Task, validate frozen identity and fresh claim/lease, write, then recheck ownership before commit |
 | Graph result | Serialize before awaits; lock task by ID, then recheck running/token/lease using a new PostgreSQL `clock_timestamp()` evaluation; compare identity; upsert; caller commits |
@@ -369,7 +371,7 @@ partial test index is excluded from automatic reuse by its unique chunker versio
 app, not a separately deployed HTTP server. Supplying tests is not evidence they
 passed. M4 is merged in PR #14; broad semantic quality remains a release acceptance concern.
 Checkpoint recovery is merged in PR #15 with maintainer-confirmed acceptance, as described below.
-HITL, cross-run memory, monetary budgets and private access remain future work;
+On-demand review below has maintainer-confirmed local acceptance, with PR/CI pending; cross-run memory, monetary budgets and private access remain future work;
 none replace the task lifecycle.
 
 ### Automatic URL intake and knowledge preparation
@@ -486,7 +488,7 @@ sampleproject Issue #225 from URL-only submission, used three rounds and returne
 and `stop`/`tool_calls` completions. The assistant did not independently run these
 tests. Git contains the M4 squash merge in PR #14; the maintainer reported the CI
 fix resolved. Valid provenance is not semantic fact verification. M5 adds recovery
-as a separate boundary below; HITL/memory and the M6 product UI remain pending.
+as a separate boundary below; human review has maintainer-confirmed local acceptance, while memory and the M6 product UI remain pending.
 
 
 ## Durable Graph execution and recovery
@@ -561,13 +563,12 @@ result/status commit gap. The existing
 [Worker E2E suite](../tests/integration/test_worker_graph_source_e2e.py) additionally
 cancels analysis and restarts the default Worker through real MQ redelivery.
 The maintainer confirmed the checkpoint acceptance suites passed; Git contains PR #15.
-The maintainer reports URL reuse/progress local tests passed and application services started; its PR review, CI and merge remain pending. The assistant did not execute the acceptance suites.
+The maintainer reports URL reuse/progress local tests passed and application services started; Git contains URL reuse squash merge PR #16. The assistant did not execute the acceptance suites.
 
-Human review remains future work and will be on demand. Normal reports do not
+Human review is an on-demand extension described below, with maintainer-confirmed local acceptance and PR/CI pending. Normal reports do not
 require approval. Adjustable budget exhaustion may later preserve trusted
 progress for a human decision; it cannot authorize invalid JSON, citations,
-repository/index/claim boundaries or provider hard limits. No review endpoints,
-waiting states or trusted long-term memory are introduced by checkpoint storage.
+repository/index/claim boundaries or provider hard limits. Checkpoint storage itself introduces no review endpoints or waiting states; the extension below supplies those. Trusted long-term memory remains future work.
 
 
 ## Repeated URL resolution, freshness and progress
@@ -627,8 +628,8 @@ completion/retry/failure events. Each processing event uses the active claim,
 short Task lock, fresh DB clock and independent Session. Lifecycle events commit
 with the Runner's status transition. No provider request spans these transactions.
 Node observation changes no Graph state or edges. The original Runner remains
-the only Task lifecycle owner. A model output limit is a safe typed ValueError
-subclass for error reporting; it still fails validation under the existing policy.
+the Worker claim/lease and automatic lifecycle owner. A model output limit is a safe typed ValueError
+subclass for error reporting; it still fails result validation; the review extension can preserve the failure for an operator decision.
 Raw exception strings, HTTP bodies, keys and model content are not API error text.
 
 GET details preserves the original one-statement Task/Snapshot/Result read.
@@ -644,9 +645,57 @@ Task generation/recoverability/freshness fields and Outbox generation. Stop old
 processes, manually migrate, and restart matching API/Dispatcher/Worker code;
 older Workers do not understand nonzero-generation messages. Downgrade refuses
 when recovery generations exist rather than discard their delivery semantics.
-No review states, notification transport, product frontend or memory is added.
+The URL slice alone added no review state. Review is the separate extension below; notification transport, product frontend and memory remain future work.
 
 Acceptance uses offline resolution/Graph/API/error contracts, real PostgreSQL
 concurrency/expiry/rollback/generation tests and actual API→Outbox→MQ→default
-Worker recovery with simulated HTTP. These new tests are not yet run. See
+Worker recovery with simulated HTTP. The maintainer confirmed local acceptance and Git contains PR #16. See
 [README commands](../README.md#url-reuse-and-progress-acceptance).
+
+
+## On-demand human decisions
+
+The default Worker classifies only typed preparation budgets/deadlines and
+analysis generation limits for review. A trusted `ReviewContext` captures the
+base execution, effective budgets and, for analysis, Run fingerprint/checkpoint.
+It reads only committed complete prior analysis and applies the existing scope,
+result and citation validators. Pending/failed model writes are not reports.
+The original Graph topology and `durability="sync"` execution are unchanged.
+
+The existing Runner persists the request and `review_requested` event with a
+fresh conditional claim/lease check, then moves running → waiting_review and
+clears claim/lease in the same transaction. It returns only after commit, so ACK
+is safe. No Worker waits for a person. Duplicate deliveries return without work;
+a repeated URL returns awaiting_review. No automatic expiry job is introduced.
+
+Review commands serialize on the same Task row, check review/generation/base
+configuration/checkpoint identities, and make a request-scoped idempotent
+decision. Approval persists the decision, queues pending under a new generation
+and inserts Outbox/event together. Rejection is a terminal failed decision with
+no new work. These are checked transitions within the existing lifecycle, not a
+second runner or heartbeat/status subsystem.
+
+`execution_generation` fences deliveries only. `user_recovery_count` and
+`budget_resume_count` each allow three resumes. Approved preparation profiles
+cannot lower other effective limits; output approvals require a larger finite
+integer and respect an optional deployment ceiling. Original Task budget and
+Run execution remain unchanged. Approved review records are separate effective
+budget versions; Worker binds the corresponding analyzer to existing clients.
+Model/embedding/endpoint/code identities are still frozen, and API keys are not
+recorded. Selection remains deployment-level through existing settings.
+
+Accepting a cached complete partial analysis also queues normal Worker work.
+The Processor validates its frozen identity/result and commits the artifact,
+then the Runner marks success. The report explicitly records human acceptance
+of unfinished investigation progress. The Graph checkpoint may stay unfinished;
+a crash before success reuses the approved result without calling the model.
+Preparation without a Run can restart uncommitted work and reuse ready knowledge.
+Invalid JSON/citations, provider hard limits, lease loss, Graph/tool timeouts and
+mixed failures do not become approvable output. `length` may describe context as
+well as output exhaustion, so raising output is not a guaranteed remedy.
+
+Registered model `InvestigationReview`, Alembic `1bc6f8a0d417`, typed API
+`/{task_id}/reviews` and `/{task_id}/reviews/{review_id}/decision` provide the
+persistent boundary. The migration backfills user recoveries from old delivery
+generations and refuses destructive downgrade. Supplied offline/PG/MQ tests
+passed per maintainer feedback, with application services restarted. The assistant did not run those suites; reviewed PR/CI/merge remain pending. See [manual commands](../README.md#on-demand-human-review).

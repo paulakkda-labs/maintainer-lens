@@ -36,8 +36,10 @@ from maintainer_lens.db.investigation_progress import (
     TaskEventRecorder,
     append_task_event,
 )
+from maintainer_lens.db.investigation_review import load_approved_review
 from maintainer_lens.db.session import create_session_factory
 from maintainer_lens.investigation_runner import (
+    InvestigationReviewRequired,
     PermanentInvestigationError,
     RetryableInvestigationError,
 )
@@ -73,6 +75,11 @@ from maintainer_lens.services.investigation_preparation import create_knowledge_
 from maintainer_lens.services.investigation_processor import process_graph_investigation
 from maintainer_lens.services.investigation_progress import (
     InvestigationProgressReporter,
+)
+from maintainer_lens.services.investigation_review import (
+    apply_approval,
+    build_review_context,
+    review_trigger,
 )
 from maintainer_lens.services.investigation_source_index import (
     InvestigationSourceIndexNotReadyError,
@@ -187,6 +194,7 @@ async def run_worker(
                 ),
                 model_name=settings.llm_model_name or "",
                 thinking_enabled=False,
+                max_output_tokens=getattr(settings, "llm_max_output_tokens", 4096),
             )
             history_searcher = create_history_searcher(
                 session_factory,
@@ -272,46 +280,89 @@ async def run_worker(
                     embedding_dimensions=settings.embedding_dimensions,
                     on_stage=progress.phase,
                 )
-                await process_graph_investigation(
-                    http_client=http_client,
-                    session_factory=session_factory,
-                    task_id=request.task_id,
-                    claim_token=claim_token,
-                    repository=request.repository,
-                    issue_number=request.issue_number,
-                    response_language=WORKER_RESPONSE_LANGUAGE,
-                    history_searcher=history_searcher,
-                    analyzer=analyzer,
-                    timeout_seconds=WORKER_GRAPH_TIMEOUT_SECONDS,
-                    max_search_rounds=WORKER_MAX_SEARCH_ROUNDS,
-                    source_index_id=request.source_index_id,
-                    source_searcher=(
-                        production_source_search
-                        if request.source_index_id is not None
-                        or request.auto_prepare_knowledge
-                        else None
-                    ),
-                    source_index_validator=validate_source_index,
-                    tool_search_runner=(
-                        source_tool_runner
-                        if request.source_index_id is not None
-                        or request.auto_prepare_knowledge
-                        else history_tool_runner
-                    ),
-                    auto_prepare_knowledge=request.auto_prepare_knowledge,
-                    knowledge_preparer=knowledge_preparer,
-                    progress=progress,
-                    checkpoint_store=InvestigationCheckpointStore(
-                        session_factory,
+                checkpoint_store = InvestigationCheckpointStore(
+                    session_factory, task_id=request.task_id, claim_token=claim_token
+                )
+                base_execution = make_worker_execution_config(
+                    settings,
+                    source_enabled=request.source_index_id is not None
+                    or request.auto_prepare_knowledge,
+                )
+                budget, approval = await load_approved_review(
+                    session_factory, task_id=request.task_id, claim_token=claim_token
+                )
+                output_tokens = base_execution.llm_max_output_tokens
+                effective_analyzer = analyzer
+                if approval is not None:
+                    context, decision = approval
+                    if context.base_execution != base_execution:
+                        raise ValueError(
+                            "Deployment identity differs from the approved investigation"
+                        )
+                    budget, output_tokens = apply_approval(context, decision)
+                    ceiling = getattr(settings, "llm_review_max_output_tokens", None)
+                    if (
+                        ceiling is not None
+                        and output_tokens > ceiling
+                        and decision.action == "increase_budget"
+                    ):
+                        raise ValueError(
+                            "Approved output exceeds the current deployment ceiling"
+                        )
+                    effective_analyzer = create_llm_analyzer(
+                        llm_http_client,
+                        base_url=settings.llm_base_url or "",
+                        api_key=settings.llm_api_key.get_secret_value(),
+                        model_name=settings.llm_model_name or "",
+                        thinking_enabled=False,
+                        max_output_tokens=output_tokens,
+                    )
+                try:
+                    await process_graph_investigation(
+                        http_client=http_client,
+                        session_factory=session_factory,
                         task_id=request.task_id,
                         claim_token=claim_token,
-                    ),
-                    checkpoint_config=make_worker_execution_config(
-                        settings,
-                        source_enabled=request.source_index_id is not None
-                        or request.auto_prepare_knowledge,
-                    ),
-                )
+                        repository=request.repository,
+                        issue_number=request.issue_number,
+                        response_language=WORKER_RESPONSE_LANGUAGE,
+                        history_searcher=history_searcher,
+                        analyzer=effective_analyzer,
+                        timeout_seconds=WORKER_GRAPH_TIMEOUT_SECONDS,
+                        max_search_rounds=WORKER_MAX_SEARCH_ROUNDS,
+                        source_index_id=request.source_index_id,
+                        source_searcher=(
+                            production_source_search
+                            if request.source_index_id is not None
+                            or request.auto_prepare_knowledge
+                            else None
+                        ),
+                        source_index_validator=validate_source_index,
+                        tool_search_runner=(
+                            source_tool_runner
+                            if request.source_index_id is not None
+                            or request.auto_prepare_knowledge
+                            else history_tool_runner
+                        ),
+                        auto_prepare_knowledge=request.auto_prepare_knowledge,
+                        knowledge_preparer=knowledge_preparer,
+                        progress=progress,
+                        review_approval=approval,
+                        checkpoint_store=checkpoint_store,
+                        checkpoint_config=base_execution,
+                    )
+                except Exception as error:
+                    trigger = review_trigger(error)
+                    if trigger is None:
+                        raise
+                    context = await build_review_context(
+                        checkpoint_store,
+                        trigger=trigger,
+                        budget=budget,
+                        base_execution=base_execution,
+                        output_tokens=output_tokens,
+                    )
+                    raise InvestigationReviewRequired(context) from error
 
             investigate = production_investigate
 

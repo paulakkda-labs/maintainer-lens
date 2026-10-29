@@ -11,6 +11,7 @@ from maintainer_lens.api.dependencies import (
     get_db_session,
     get_session_factory,
 )
+from maintainer_lens.api.routes.investigation_reviews import router as review_router
 from maintainer_lens.db.investigation_progress import (
     read_latest_progress,
     read_task_events,
@@ -60,6 +61,7 @@ from maintainer_lens.services.investigation_url_reuse import (
 )
 
 router = APIRouter(prefix="/investigations", tags=["Investigations"])
+router.include_router(review_router)
 
 
 @router.post(
@@ -122,7 +124,10 @@ async def create_investigation_from_url(
             status_code=500, detail="Stored investigation is unavailable"
         ) from exc
     response.status_code = (
-        202 if result.decision in ("created", "active", "resumed", "checking") else 200
+        202
+        if result.decision
+        in ("created", "active", "resumed", "checking", "awaiting_review")
+        else 200
     )
     return result
 

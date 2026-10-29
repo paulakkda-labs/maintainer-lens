@@ -46,6 +46,8 @@ async def add_investigation_submission(
             knowledge_budget=budget.model_dump(mode="json"),
             status="pending",
             execution_generation=0,
+            user_recovery_count=0,
+            budget_resume_count=0,
             failure_retryable=False,
         )
     )

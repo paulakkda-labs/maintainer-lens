@@ -29,16 +29,25 @@ from maintainer_lens.schemas.investigation_contracts import (
     InvestigationIdentity,
     InvestigationInput,
 )
+from maintainer_lens.schemas.investigation_review import (
+    HUMAN_ACCEPTANCE_REASON,
+    ReviewContext,
+    ReviewDecision,
+)
 from maintainer_lens.services.investigation_checkpoint_execution import (
     execute_checkpointed_investigation,
     load_checkpointed_investigation,
     validate_execution_compatibility,
 )
-from maintainer_lens.services.investigation_execution import execute_graph_investigation
+from maintainer_lens.services.investigation_execution import (
+    _validate_result,
+    execute_graph_investigation,
+)
 from maintainer_lens.services.investigation_preparation import KnowledgePreparer
 from maintainer_lens.services.investigation_progress import (
     InvestigationProgressReporter,
 )
+from maintainer_lens.services.investigation_review import apply_approval
 from maintainer_lens.services.issue_investigator import investigate_issue
 
 
@@ -65,6 +74,7 @@ async def process_graph_investigation(
     checkpoint_store: InvestigationCheckpointStore | None = None,
     checkpoint_config: GraphCheckpointConfig | None = None,
     progress: InvestigationProgressReporter | None = None,
+    review_approval: tuple[ReviewContext, ReviewDecision] | None = None,
 ) -> None:
     """Process an existing claim, returning only after its result commits.
 
@@ -118,6 +128,13 @@ async def process_graph_investigation(
             or checkpoint_config.search_strategy != strategy
         ):
             raise ValueError("Processor options do not match checkpoint configuration")
+
+    if review_approval is not None:
+        review_context, review_decision = review_approval
+        if checkpoint_config != review_context.base_execution:
+            raise ValueError(
+                "Approved review differs from the current execution identity"
+            )
 
     preparation = None
     async with session_factory() as session:
@@ -183,7 +200,10 @@ async def process_graph_investigation(
         )
         if preparation is not None and task_source_index_id is None:
             task_source_index_id = await knowledge_preparer(
-                task_repository, preparation.budget
+                task_repository,
+                apply_approval(*review_approval)[0]
+                if review_approval is not None
+                else preparation.budget,
             )
             await source_index_validator(task_repository, task_source_index_id)
             async with session_factory() as session, session.begin():
@@ -210,7 +230,22 @@ async def process_graph_investigation(
         if checkpoint_store is not None:
             frozen_run = await checkpoint_store.create_run(request, checkpoint_config)
 
-    if checkpoint_store is not None:
+    if review_approval is not None and review_decision.action == "accept_partial":
+        if (
+            frozen_run is None
+            or frozen_run.fingerprint != review_context.run_fingerprint
+        ):
+            raise ValueError("Accepted analysis has a different frozen execution")
+        result = _validate_result(
+            {
+                **review_context.partial_result.model_dump(mode="json"),
+                "routing_reason": HUMAN_ACCEPTANCE_REASON,
+                "no_new_evidence": review_context.partial_no_new_evidence,
+            },
+            frozen_run.request,
+            frozen_run.execution.max_search_rounds,
+        )
+    elif checkpoint_store is not None:
         result = await execute_checkpointed_investigation(
             frozen_run,
             checkpoint_store,
