@@ -113,6 +113,7 @@ def test_github_status_has_display_priority_without_rewriting_analysis(state, la
         ("reused", "succeeded", 200),
         ("unverified", "succeeded", 200),
         ("blocked", "failed", 200),
+        ("awaiting_review", "waiting_review", 202),
     ],
 )
 async def test_url_route_returns_selected_task_and_resolution_decision(

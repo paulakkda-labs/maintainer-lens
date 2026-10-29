@@ -36,7 +36,9 @@ def make_worker_execution_config(
         ),
         llm_model=settings.llm_model_name or "",
         llm_endpoint_fingerprint=endpoint_fingerprint(settings.llm_base_url or ""),
-        llm_max_output_tokens=DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
+        llm_max_output_tokens=getattr(
+            settings, "llm_max_output_tokens", DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS
+        ),
         thinking_enabled=False,
         tool_timeout_seconds=WORKER_TOOL_TIMEOUT_SECONDS,
     )

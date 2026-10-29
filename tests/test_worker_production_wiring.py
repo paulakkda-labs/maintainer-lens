@@ -59,6 +59,8 @@ def _settings(**changes) -> Settings:
         "llm_base_url": "https://chat.example/v1",
         "llm_model_name": "test-analysis-model",
         "llm_api_key": "llm-test-token",
+        "llm_max_output_tokens": 4096,
+        "llm_review_max_output_tokens": None,
         "embedding_base_url": "https://embedding.example/v1",
         "embedding_model": "test-embedding-model",
         "embedding_api_key": "embedding-test-token",
@@ -522,6 +524,15 @@ class _Harness:
         )
 
     def install(self, monkeypatch):
+        from maintainer_lens.schemas.investigation_budget import (
+            make_knowledge_preparation_budget,
+        )
+
+        monkeypatch.setattr(
+            worker,
+            "load_approved_review",
+            AsyncMock(return_value=(make_knowledge_preparation_budget(), None)),
+        )
         # This suite isolates SQL. Durable Saver/claim recovery has dedicated tests.
         monkeypatch.setattr(
             worker,

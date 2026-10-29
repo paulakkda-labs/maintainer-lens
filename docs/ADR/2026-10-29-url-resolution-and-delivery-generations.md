@@ -1,6 +1,6 @@
 # URL resolution, scoped freshness and delivery generations
 
-Status: Accepted. Maintainer reports local tests passed and services started; PR review, CI and merge pending.
+Status: Accepted. Maintainer reports local tests passed and services started; implementation merged in PR #16.
 Date: 2026-10-29.
 
 ## Context

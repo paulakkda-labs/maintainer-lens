@@ -1,8 +1,9 @@
 """Application configuration and settings management."""
 
 from functools import lru_cache
+from typing import Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None
     llm_model_name: str | None = None
     llm_api_key: SecretStr | None = None
+    llm_max_output_tokens: int = Field(default=4096, gt=0)
+    # Optional deployment approval ceiling, not a provider capability guarantee.
+    llm_review_max_output_tokens: int | None = Field(default=None, gt=0)
 
     # Embedding provider configuration.
     embedding_base_url: str | None = None
@@ -36,6 +40,17 @@ class Settings(BaseSettings):
         default=None,
         gt=0,
     )
+
+    @model_validator(mode="after")
+    def validate_review_output_ceiling(self) -> Self:
+        if (
+            self.llm_review_max_output_tokens is not None
+            and self.llm_review_max_output_tokens < self.llm_max_output_tokens
+        ):
+            raise ValueError(
+                "Review output ceiling cannot be below the initial output budget"
+            )
+        return self
 
 
 @lru_cache

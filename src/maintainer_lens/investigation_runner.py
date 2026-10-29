@@ -27,6 +27,18 @@ class LeaseLostError(RuntimeError):
     """Raised when a worker loses ownership of an investigation task."""
 
 
+class InvestigationReviewRequired(Exception):
+    """A processor supplied a validated review snapshot instead of a terminal result."""
+
+    def __init__(self, context):
+        super().__init__("Investigation requires a human budget decision")
+        from maintainer_lens.schemas.investigation_review import ReviewContext
+
+        self.context = ReviewContext.model_validate_json(
+            context.model_dump_json(), strict=True
+        )
+
+
 class InvestigationClaimUnavailableError(RuntimeError):
     """Raised when an investigation task cannot be claimed."""
 
@@ -198,14 +210,17 @@ async def execute_investigation_task(
         RetryableInvestigationError | PermanentInvestigationError | None
     ) = None
     error_info = None
+    review_context = None
 
     async def guarded_processor() -> None:
-        nonlocal processing_error, error_info
+        nonlocal processing_error, error_info, review_context
 
         try:
             await processor(claim_token)
         except LeaseLostError:
             raise
+        except InvestigationReviewRequired as exc:
+            review_context = exc.context
         except Exception as exc:
             processing_error = _classify_processing_error(exc)
             if event_recorder is not None:
@@ -228,6 +243,18 @@ async def execute_investigation_task(
         claim_token=claim_token,
         processor=guarded_processor,
     )
+
+    if review_context is not None:
+        from maintainer_lens.db.investigation_review import suspend_task_for_review
+
+        async with session_factory() as session, session.begin():
+            await suspend_task_for_review(
+                session,
+                task_id=task_id,
+                claim_token=claim_token,
+                context=review_context,
+            )
+        return
 
     if processing_error is not None:
         async with session_factory() as session:

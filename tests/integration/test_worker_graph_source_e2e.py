@@ -533,6 +533,8 @@ def _fake_settings(settings):
         rabbitmq_url=settings.rabbitmq_url,
         llm_base_url="https://chat.example/v1",
         llm_model_name="e2e-analysis",
+        llm_max_output_tokens=4096,
+        llm_review_max_output_tokens=None,
         llm_api_key="fake-key",
         embedding_base_url="https://embedding.example/v1",
         embedding_model="e2e-embedding",
@@ -669,6 +671,9 @@ async def _post_dispatch_read(
     budget=None,
     automatic=False,
 ):
+    import maintainer_lens.api.routes.investigation_reviews as review_routes
+
+    monkeypatch.setattr(review_routes, "get_settings", lambda: settings)
     app = FastAPI()
     app.state.session_factory = factory
     app.include_router(router)
@@ -787,6 +792,28 @@ async def _post_dispatch_read(
                 assert (
                     await client.get(f"/investigations/{watch.task_id}")
                 ).json() == data
+            elif watch.expected_status == "waiting_review":
+                assert data["result"] is None and data["report_markdown"] is None
+                reviews = (
+                    await client.get(f"/investigations/{watch.task_id}/reviews")
+                ).json()
+                assert (
+                    len(reviews) == 1
+                    and reviews[0]["context"]["reason"] == "source_files"
+                )
+                assert (
+                    reviews[0]["context"]["observed"] == 21
+                    and not reviews[0]["can_accept_partial"]
+                )
+                assert await broker.dead.get(timeout=5, fail=False) is None
+                waiting = await client.post(
+                    "/investigations/from-url",
+                    json={
+                        "issue_url": f"https://github.com/{repository}/issues/{issue_number}",
+                        "knowledge_budget_profile": "small",
+                    },
+                )
+                assert waiting.json()["decision"] == "awaiting_review"
             else:
                 assert data["result"] is None and data["report_markdown"] is None
                 dead = await broker.dead.get(timeout=5, fail=True)
@@ -1288,7 +1315,7 @@ async def test_url_only_cold_start_and_ready_index_reuse_with_real_worker(
                 watch = _Watch(
                     factory,
                     task_id,
-                    expected_status="failed" if over_budget else "succeeded",
+                    expected_status="waiting_review" if over_budget else "succeeded",
                     snapshot_on_failure=over_budget,
                 )
                 with monkeypatch.context() as patch:
@@ -1887,10 +1914,13 @@ async def test_checkpointed_worker_redelivery_reuses_cold_preparation_and_retrie
 
 
 @requires_infrastructure
+@pytest.mark.parametrize("failure_mode", ["http503", "analysis_length", "source_files"])
 async def test_url_resubmission_recovers_same_task_through_new_outbox_generation(
     monkeypatch,
+    failure_mode,
 ):
     """Actual API/PG/Outbox/MQ/default Worker with simulated HTTP providers."""
+    import maintainer_lens.api.routes.investigation_reviews as review_routes
     import maintainer_lens.api.routes.investigations as api_routes
     from maintainer_lens.messaging.publisher import create_investigation_message
     from maintainer_lens.messaging.schemas import RETRY_ATTEMPTS_HEADER
@@ -1903,17 +1933,38 @@ async def test_url_resubmission_recovers_same_task_through_new_outbox_generation
     )
 
     settings = _fake_settings(get_settings())
+    monkeypatch.setattr(review_routes, "get_settings", lambda: settings)
     repository, task_id = f"url-recovery-e2e/repo-{uuid4().hex}", str(uuid4())
-    providers = _AutomaticProviders(repository)
+    providers = _AutomaticProviders(
+        repository, over_budget=failure_mode == "source_files"
+    )
     fail_analysis = True
+    analysis_output_limits = []
 
     async def provider(request):
+        if (
+            request.url.path.endswith("/chat/completions")
+            and json.loads(request.content).get("tool_choice") is None
+        ):
+            analysis_output_limits.append(json.loads(request.content)["max_tokens"])
         if (
             fail_analysis
             and request.url.path.endswith("/chat/completions")
             and json.loads(request.content).get("tool_choice") is None
         ):
             providers.requests["llm"] += 1
+            if failure_mode == "analysis_length":
+                return httpx.Response(
+                    200,
+                    json={
+                        "choices": [
+                            {
+                                "finish_reason": "length",
+                                "message": {"content": "fake-secret-incomplete"},
+                            }
+                        ]
+                    },
+                )
             return httpx.Response(
                 503, json={"error": {"message": "fake-secret-provider-response"}}
             )
@@ -1972,7 +2023,12 @@ async def test_url_resubmission_recovers_same_task_through_new_outbox_generation
             ) as client,
         ):
             watch = _Watch(
-                factory, task_id, expected_status="failed", snapshot_on_failure=True
+                factory,
+                task_id,
+                expected_status="waiting_review"
+                if failure_mode != "http503"
+                else "failed",
+                snapshot_on_failure=True,
             )
             ready, clients = _observe_worker(
                 monkeypatch,
@@ -1998,25 +2054,68 @@ async def test_url_resubmission_recovers_same_task_through_new_outbox_generation
                 )
                 await _wait(operation, watch.event)
                 detail = await client.get(f"/investigations/{task_id}")
-                assert detail.json()["status"] == "failed"
-                assert detail.json()["last_error"]["retryable"] is True
-                assert "fake-secret-provider-response" not in detail.text
-                dead = await broker.dead.get(timeout=5, fail=True)
-                assert (
-                    InvestigationRequestedMessage.model_validate_json(
-                        dead.body
-                    ).generation
-                    == 0
-                )
-                await dead.ack()
+                assert "fake-secret" not in detail.text
+                if failure_mode == "http503":
+                    assert detail.json()["status"] == "failed"
+                    assert detail.json()["last_error"]["retryable"] is True
+                    dead = await broker.dead.get(timeout=5, fail=True)
+                    assert (
+                        InvestigationRequestedMessage.model_validate_json(
+                            dead.body
+                        ).generation
+                        == 0
+                    )
+                    await dead.ack()
+                    retried = await client.post(
+                        "/investigations/from-url", json=payload
+                    )
+                    assert (
+                        retried.status_code == 202
+                        and retried.json()["decision"] == "resumed"
+                    )
+                    assert retried.json()["generation"] == 1
+                else:
+                    assert detail.json()["status"] == "waiting_review"
+                    waiting = await client.post(
+                        "/investigations/from-url", json=payload
+                    )
+                    assert (
+                        waiting.status_code == 202
+                        and waiting.json()["decision"] == "awaiting_review"
+                    )
+                    reviews = (
+                        await client.get(f"/investigations/{task_id}/reviews")
+                    ).json()
+                    assert len(reviews) == 1 and reviews[0]["context"]["reason"] == (
+                        "source_files"
+                        if failure_mode == "source_files"
+                        else "analysis_generation_limit"
+                    )
+                    assert reviews[0]["can_accept_partial"] is False
+                    decision = {
+                        "decision_id": str(uuid4()),
+                        "action": "increase_budget",
+                    }
+                    decision.update(
+                        {"knowledge_budget_profile": "standard"}
+                        if failure_mode == "source_files"
+                        else {"max_output_tokens": 8192}
+                    )
+                    approved = await client.post(
+                        f"/investigations/{task_id}/reviews/{reviews[0]['review_id']}/decision",
+                        json=decision,
+                    )
+                    assert (
+                        approved.status_code == 200
+                        and approved.json()["target_generation"] == 1
+                    )
+                    assert (
+                        await client.post(
+                            f"/investigations/{task_id}/reviews/{reviews[0]['review_id']}/decision",
+                            json=decision,
+                        )
+                    ).json() == approved.json()
                 fail_analysis = False
-                retried = await client.post("/investigations/from-url", json=payload)
-                assert retried.status_code == 202
-                assert (
-                    retried.json()["task_id"] == task_id
-                    and retried.json()["decision"] == "resumed"
-                )
-                assert retried.json()["generation"] == 1
                 before = providers.requests.copy()
                 watch.expected_status, watch.event = "pending", asyncio.Event()
                 # A delayed old delivery is ACKed without consuming the new claim.
@@ -2036,10 +2135,27 @@ async def test_url_resubmission_recovers_same_task_through_new_outbox_generation
                 await _wait(operation, watch.event)
                 final = (await client.get(f"/investigations/{task_id}")).json()
                 assert final["status"] == "succeeded" and final["generation"] == 1
-                assert final["result"]["search_round"] == 2 and final["report_markdown"]
-                assert providers.requests["github"] == before["github"]
-                assert providers.requests["embedding"] == before["embedding"] + 1
+                assert final["report_markdown"]
+                assert final["result"]["search_round"] in (
+                    (2, 3) if failure_mode == "source_files" else (2,)
+                )
+                if failure_mode == "source_files":
+                    assert providers.requests["github"] > before["github"]
+                    assert providers.source_calls["blob"] == 21
+                    assert providers.requests["embedding"] > before["embedding"]
+                else:
+                    assert providers.requests["github"] == before["github"]
+                    assert providers.requests["embedding"] == before["embedding"] + 1
                 assert watch.acknowledgements == 3
+                if failure_mode == "analysis_length":
+                    assert analysis_output_limits[0] == 4096
+                    assert len(analysis_output_limits) >= 2 and all(
+                        value == 8192 for value in analysis_output_limits[1:]
+                    )
+                else:
+                    assert analysis_output_limits and all(
+                        value == 4096 for value in analysis_output_limits
+                    )
                 cached = await client.post("/investigations/from-url", json=payload)
                 assert (
                     cached.status_code == 200 and cached.json()["decision"] == "reused"
@@ -2054,7 +2170,10 @@ async def test_url_resubmission_recovers_same_task_through_new_outbox_generation
                     )
                 ).json()["events"]
                 assert any(
-                    event["kind"] == "failed" and event["phase"] == "analyzing"
+                    event["kind"]
+                    == ("review_requested" if failure_mode != "http503" else "failed")
+                    and event["phase"]
+                    == ("waiting_review" if failure_mode != "http503" else "analyzing")
                     for event in events
                 )
                 assert (
@@ -2070,6 +2189,13 @@ async def test_url_resubmission_recovers_same_task_through_new_outbox_generation
                     ).all()
                     assert sorted(event.generation for event in envelopes) == [0, 1]
                     assert all(event.published_at is not None for event in envelopes)
+                    task = await session.get(InvestigationTask, task_id)
+                    assert task.budget_resume_count == (
+                        1 if failure_mode != "http503" else 0
+                    )
+                    assert task.user_recovery_count == (
+                        0 if failure_mode != "http503" else 1
+                    )
             finally:
                 await _stop(operation)
                 assert len(clients) == 3 and all(client.is_closed for client in clients)

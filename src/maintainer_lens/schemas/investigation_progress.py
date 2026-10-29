@@ -19,12 +19,16 @@ type InvestigationPhase = Literal[
     "tool_search",
     "finalizing",
     "completed",
+    "waiting_review",
 ]
 type InvestigationEventKind = Literal[
     "queued",
     "started",
     "progress",
     "retry_scheduled",
+    "review_requested",
+    "review_approved",
+    "review_rejected",
     "failed",
     "completed",
 ]

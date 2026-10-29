@@ -106,7 +106,7 @@ async def process_investigation_request(
                 task_id=request.task_id,
             )
 
-        if status == "succeeded":
+        if status in ("succeeded", "waiting_review"):
             return
 
         raise RetryableMessageError(

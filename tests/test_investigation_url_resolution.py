@@ -210,6 +210,8 @@ class _Memory:
             prepared_source_index_id=INDEX,
             status=status,
             execution_generation=generation,
+            user_recovery_count=generation,
+            budget_resume_count=0,
             failure_retryable=retryable,
             knowledge_budget=make_knowledge_preparation_budget().model_dump(
                 mode="json"
@@ -517,3 +519,22 @@ async def test_different_preparation_intent_does_not_reuse_an_incompatible_task(
     result = await _resolve(memory, knowledge_budget_profile=profile)
     assert result.decision == "created" and result.task_id != "original"
     assert memory.outbox[0].task_id == result.task_id
+
+
+async def test_waiting_review_url_does_not_probe_approve_or_dispatch(memory):
+    task = memory.seed(status="waiting_review")
+    observer = AsyncMock(
+        side_effect=AssertionError("Waiting must not approve or probe")
+    )
+    result = await _resolve(memory, observer)
+    assert result.task_id == task.id and result.decision == "awaiting_review"
+    assert result.status == "waiting_review" and not memory.outbox
+    observer.assert_not_awaited()
+
+
+async def test_delivery_generation_does_not_consume_user_recovery_allowance(memory):
+    task = memory.seed(status="failed", retryable=True, generation=5)
+    task.user_recovery_count, task.budget_resume_count = 2, 3
+    result = await _resolve(memory)
+    assert result.decision == "resumed" and result.generation == 6
+    assert task.user_recovery_count == 3 and task.budget_resume_count == 3

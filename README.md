@@ -2,7 +2,7 @@
 
 **Evidence-grounded, asynchronous GitHub Issue investigation for open-source maintainers.**
 
-MaintainerLens is an Apache-2.0 project under active development. V1 targets **public GitHub repositories** and a read-only, server-side investigation experience: reliable asynchronous Issue intake; source/documentation and historical Issue/PR retrieval; bounded LangGraph reasoning; evidence-linked conclusions; and, in later milestones, durable workflow recovery, memory, and human review. It is not an IDE code-editing assistant or an automatic source patcher.
+MaintainerLens is an Apache-2.0 project under active development. V1 targets **public GitHub repositories** and a read-only, server-side investigation experience: reliable asynchronous Issue intake; source/documentation and historical Issue/PR retrieval; bounded LangGraph reasoning; evidence-linked conclusions; recoverable workflows; and on-demand human review. Trusted long-term memory remains planned. It is not an IDE code-editing assistant or an automatic source patcher.
 
 ## Current capabilities
 
@@ -17,15 +17,15 @@ MaintainerLens is an Apache-2.0 project under active development. V1 targets **p
 - **Durable results:** an injected Snapshot → Graph → result processor,
   lease-fenced versioned JSONB storage and HTTP readback of completed results.
 
-**Integration boundary:** the default Worker runs the existing Graph processor
-under the original claim/lease Runner. `POST /investigations/from-url` queues
-backend-managed Source/History preparation, then bounded investigation and a
-saved Markdown report. The lower-level repository/Issue/optional Source UUID
-endpoint remains available. The preceding Source+History fixture smoke passed
-per maintainer feedback. The maintainer also confirmed local regressions and
-the automatic cold-start paid smoke passed. M4 awaits report review and reviewed
-green CI/merge. Checkpointer, HITL, cross-run memory and a product Web
-UI are not implemented.
+**Integration boundary:** the default Worker runs the Graph processor under the
+original claim/lease Runner. `POST /investigations/from-url` resolves active work,
+a reusable report or a new investigation with managed Source/History preparation.
+The lower-level repository/Issue/optional Source UUID endpoint remains available.
+M4 integration, M5 checkpoints and URL reuse are merged through PRs #14–#16 with
+maintainer-confirmed local acceptance. The on-demand review extension is supplied
+on its feature branch; the maintainer confirmed local tests passed and services restarted. PR review, CI and merge remain pending. Trusted
+long-term memory and a product Web UI are not implemented. Broader semantic
+report-quality evaluation remains a release concern.
 
 [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [Architecture decisions](docs/ADR/README.md)
@@ -79,7 +79,7 @@ structured preliminary analysis, complete returned History/Source evidence,
 the actual latest analysis excerpts, terminal next step, search round and
 routing reason.
 
-Only `succeeded` tasks expose a stored result. Pending/running/failed tasks and
+Only `succeeded` tasks expose a stored result. Pending/running/waiting_review/failed tasks and
 legacy snapshot-only successes return `result: null`. Unsupported/corrupt stored
 results on a successful task produce HTTP 500 instead of silently hiding the
 error. GET does not invoke providers or backfill old tasks.
@@ -498,7 +498,7 @@ Use the URL endpoint to request automatic mode; do not toggle task rows manually
 
 ```bash
 uv run alembic upgrade head
-uv run alembic current  # expected head: 0ab5e7f9c306
+uv run alembic current  # expected head: 1bc6f8a0d417
 
 # Offline contracts, DDL and API checks; no external services
 RUN_POSTGRES_INTEGRATION=0 RUN_RABBITMQ_INTEGRATION=0 uv run pytest -q \
@@ -739,7 +739,7 @@ docker compose stop api dispatcher worker
 docker compose build migrate
 docker compose run --rm --no-deps migrate
 docker compose run --rm --no-deps migrate alembic current
-# Expected head: 0ab5e7f9c306. Keep applications stopped while running DB/MQ tests.
+# Expected head: 1bc6f8a0d417. Keep applications stopped while running DB/MQ tests.
 # After migrations and acceptance succeed:
 docker compose up -d --no-deps api dispatcher worker
 docker compose ps -a
@@ -755,7 +755,7 @@ a short application maintenance window rather than a rolling-upgrade guarantee.
 ```bash
 uv run --locked alembic upgrade head
 uv run --locked alembic current
-# Expected head: 0ab5e7f9c306, extending f9a4d6e8b205.
+# Expected head: 1bc6f8a0d417, including URL revision 0ab5e7f9c306.
 
 uv run --locked pytest -q \
   tests/test_investigation_url_resolution.py \
@@ -783,7 +783,112 @@ same URL, dispatches a new Outbox generation and recovers the same checkpoint
 thread. It also injects a stale delivery and checks it does not consume the new
 claim. SQL/MQ are real; providers are simulated. Existing paid smoke flags remain
 independently opt-in. These new acceptance tests have not yet been executed by
-the assistant. The maintainer reports local tests passed and services started; PR review, CI and merge remain pending. No automatic migration is performed by the application.
+the assistant. The maintainer reports local tests passed and services started; Git contains squash merge PR #16. Human-review acceptance below remains pending. No automatic migration is performed by the application.
+
+### On-demand human review
+
+Normal valid reports remain automatic. Source file/byte/chunk limits, the
+knowledge preparation scope's own deadline and analysis `finish_reason=length`
+can move the Task to `waiting_review`. Graph/tool deadlines and unrelated errors
+retain existing handling. Repeating the URL returns `awaiting_review` (HTTP 202),
+without automatically approving the request. Waiting releases the claim/lease
+and does not expire automatically.
+
+Use `/docs` or these endpoints; no product frontend or model selector is required:
+
+1. `GET /investigations/{task_id}`: status, phase, safe reason and historical report.
+2. `GET /investigations/{task_id}/reviews`: newest requests/decisions, effective
+   limits, allowed preparation profiles and whether a validated partial analysis
+   can be accepted. A missing output ceiling means no additional application
+   ceiling is configured; it does not mean the provider supports unlimited output.
+3. `POST /investigations/{task_id}/reviews/{review_id}/decision` with a fresh
+   client-generated UUID as `decision_id`. Repeat that exact body to retry an
+   uncertain response safely. A different decision for a decided request is 409.
+
+Example output increase (use an allowance supported by your configured provider):
+
+```json
+{
+  "decision_id": "63bc790e-d9b9-41db-b552-258d229e51bb",
+  "action": "increase_budget",
+  "max_output_tokens": 8192,
+  "note": "Retry with a larger output allowance."
+}
+```
+
+For preparation, select `knowledge_budget_profile` instead of `max_output_tokens`.
+Only profiles that raise the affected limit without lowering other allowances
+are offered. For example, standard and large both permit 8 MiB, so large does
+not resolve a byte-limit failure. `unlimited` requires explicit approval and
+continues to leave Graph rounds/deadlines and content/network controls in place.
+
+`accept_partial` and `reject` take no budget fields. Acceptance is only available
+for an already committed, complete analysis that passes the existing result,
+identity and citation checks; its report states that a human accepted unfinished
+investigation progress. A truncated JSON response cannot be accepted as a report.
+`length` may also indicate context exhaustion; increasing output does not ensure
+that the request will fit the model. Hard provider or provenance limits cannot
+be waived. Rejection ends this Task and does not silently reopen it on the next
+URL submission.
+
+Approval queues the same Task through a new Outbox generation. There are at most
+three budget-increase resumes, separately from three user failure recoveries.
+An identical approval replay consumes neither another quota entry nor another
+Outbox row. The original Run and submission budget remain immutable; effective
+approved budgets and decisions are separate audit versions. Changed deployment
+model/endpoint/code identities require a new investigation rather than changing
+the old Run. Knowledge preparation before Run creation can repeat uncommitted
+work; this is not byte-level checkpointing of downloads/embeddings.
+
+Configure any suitable Chat Completions-compatible model through the existing
+`LLM_*` settings and Embedding through `EMBEDDING_*`; no model whitelist is added.
+The initial analysis allowance is `LLM_MAX_OUTPUT_TOKENS` (default 4096).
+Optional `LLM_REVIEW_MAX_OUTPUT_TOKENS` limits what an operator may approve and
+must not be smaller than the initial allowance. Empty means no additional
+application ceiling. Each approval still requires a finite positive integer.
+Both settings are forwarded to API/Worker in Compose; model credentials remain
+Worker-only. Existing `.env` files need no change for defaults. Set the optional
+ceiling according to your deployment's model/cost policy; no capability lookup or
+paid probe runs at startup. These remain single-operator V1 APIs, not multi-user
+credential management.
+
+Stop application services, build and run the migration, then keep them stopped
+while running infrastructure tests:
+
+```bash
+docker compose stop api dispatcher worker
+docker compose build migrate
+docker compose run --rm --no-deps migrate
+docker compose run --rm --no-deps migrate alembic current
+# Expected head: 1bc6f8a0d417 (parent 0ab5e7f9c306).
+
+uv run --locked pytest -q \
+  tests/test_investigation_human_review.py \
+  tests/test_investigation_url_resolution.py \
+  tests/test_investigation_progress_contracts.py \
+  tests/test_worker_production_wiring.py \
+  tests/test_investigation_checkpoint_execution.py \
+  tests/test_config.py
+
+RUN_POSTGRES_INTEGRATION=1 uv run --locked pytest -q \
+  tests/integration/test_investigation_human_review_postgres.py \
+  tests/integration/test_investigation_url_reuse_postgres.py \
+  tests/integration/test_investigation_checkpoint_persistence.py
+
+RUN_POSTGRES_INTEGRATION=1 RUN_RABBITMQ_INTEGRATION=1 \
+  uv run --locked pytest -q tests/integration/test_worker_graph_source_e2e.py
+
+uv run --locked pytest -q
+# Only after successful migration/acceptance:
+docker compose up -d --no-deps api dispatcher worker
+docker compose ps -a
+```
+
+Host-mode migration remains `uv run --locked alembic upgrade head`. Revision
+`1bc6f8a0d417` adds the review table and separate counters, backfills user recovery
+counts, and refuses downgrade when human-review history exists. No migration or
+pytest has been run by the assistant. The maintainer confirmed local tests passed and services restarted; PR review, CI and merge remain pending. New provider scenarios are simulated and
+require no paid API; existing paid smoke switches remain independently opt-in.
 
 ### Repository retrieval evaluation
 
@@ -856,22 +961,33 @@ replace the local Compose/full GitHub API smoke test.
 
 3. Keep the returned `task_id`. New/active work returns HTTP **202**; a reusable
    or unverified saved report can return HTTP **200**. Inspect `decision` and `freshness`.
-4. Poll `GET /investigations/{task_id}` until `succeeded` or `failed`.
+4. Poll `GET /investigations/{task_id}` until `succeeded`, `failed` or
+   `waiting_review`. For waiting work, inspect `/investigations/{task_id}/reviews`
+   and use the [review workflow](#on-demand-human-review).
 5. A success exposes `issue`, `result` and `report_markdown`. Both supported
    `next_step` values are legal: insufficient evidence is reported explicitly.
 
 No manual Source UUID or previous task is required. The first run downloads
 selected public files and recent History and can incur embedding/LLM charges.
 Use `GET /investigations/budget-profiles` to choose a preparation profile; this
-example deliberately uses a small repository/profile. GitHub rate limits and
-finite preparation budgets can fail a task; inspect
+example deliberately uses a small repository/profile. Supported preparation
+limits pause for review; unrelated failures retain their normal retry/failure
+policy. Inspect status, safe error fields and
 `docker compose logs -f api dispatcher worker`. Existing result-less legacy
 successes are not backfilled. This is a Markdown field in Swagger/API output,
 not a product report viewer or file-export endpoint.
 
 ## Current milestone and contribution workflow
 
-M4 backend integration is merged through PR #14, including URL intake, automatic knowledge preparation, bounded tools and saved reports. The maintainer confirmed local regressions, infrastructure and paid acceptance, and the CI fix. M5 checkpoint/recovery is merged in PR #15 with maintainer-confirmed tests. The current slice implements URL reuse, controlled recovery, scoped freshness and progress/error readback; the maintainer reports local tests passed and services started, while PR review, CI and merge remain pending. On-demand human decisions and trusted memory remain later M5 work. Before changes, review `docs/ARCHITECTURE.md`, current source and relevant tests. M6 covers release reliability, representative report evaluation, UI and a Chinese README; V2 adds private repository authorization.
+M4 backend integration is merged through PR #14 with maintainer-confirmed local,
+infrastructure and paid acceptance. M5 checkpoint recovery and URL reuse are
+merged in PRs #15–#16. The maintainer confirmed on-demand human-review local
+tests passed and services restarted. Its PR review, CI and merge remain pending.
+Trusted memory remains later M5 work.
+The assistant has not independently executed these acceptance suites or observed
+CI for the current feature. Before changes, review `docs/ARCHITECTURE.md`, source
+and relevant tests. M6 covers release reliability, representative report
+evaluation, UI and a Chinese README; V2 adds private repository authorization.
 
 Use `feat/**` / `fix/**` / `docs/**` branches and reviewed squash-merge PRs; do not push to `main` directly. Before merging run Ruff, default pytest, appropriate opt-in integration tests and GitHub CI. Clearly label which integration levels actually ran. See [Roadmap](docs/ROADMAP.md) for milestones and [ADR](docs/ADR/) for established technical decisions.
 

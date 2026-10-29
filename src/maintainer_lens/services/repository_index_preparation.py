@@ -30,10 +30,29 @@ from maintainer_lens.services.source_chunker import chunk_repository_source
 class KnowledgePreparationBudgetExceeded(PermanentInvestigationError):
     """The selected finite preparation budget cannot cover this repository."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        limit_field: str | None = None,
+        observed: int | None = None,
+    ):
+        super().__init__(message)
+        self.limit_field = limit_field
+        self.observed = observed
+
 
 def _check_limit(name: str, actual: int, maximum: int | None) -> None:
     if maximum is not None and actual > maximum:
-        raise KnowledgePreparationBudgetExceeded(f"Knowledge budget exceeded: {name}")
+        raise KnowledgePreparationBudgetExceeded(
+            f"Knowledge budget exceeded: {name}",
+            limit_field={
+                "source files": "source_files",
+                "source bytes": "source_bytes",
+                "source chunks": "source_chunks",
+            }[name],
+            observed=actual,
+        )
 
 
 async def prepare_source_index_contents(

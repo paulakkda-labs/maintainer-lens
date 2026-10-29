@@ -24,9 +24,16 @@ class ResolveInvestigationResponse(BaseModel):
     """The selected task and, when available, an explicitly identified old report."""
 
     task_id: str
-    status: Literal["pending", "running", "succeeded", "failed"]
+    status: Literal["pending", "running", "succeeded", "failed", "waiting_review"]
     decision: Literal[
-        "created", "active", "reused", "resumed", "blocked", "checking", "unverified"
+        "created",
+        "active",
+        "reused",
+        "resumed",
+        "blocked",
+        "checking",
+        "unverified",
+        "awaiting_review",
     ]
     generation: int = Field(ge=0)
     previous_task_id: str | None = None

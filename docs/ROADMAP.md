@@ -1,6 +1,6 @@
 # MaintainerLens Roadmap
 
-> Updated 2026-10-29. M4 backend integration is merged through PR #14; the maintainer confirmed regressions, real-infrastructure checks, the automatic paid smoke and the CI fix. M5 checkpoint/recovery is merged in PR #15 with maintainer-confirmed acceptance. URL resolution/reuse, controlled recovery, scoped freshness and progress/error readback are implemented in the next slice; the maintainer reports local tests passed and services started. PR review, CI and merge remain pending.
+> Updated 2026-10-29. M4 backend integration is merged through PR #14; the maintainer confirmed regressions, real-infrastructure checks, the automatic paid smoke and the CI fix. M5 checkpoint/recovery is merged in PR #15 with maintainer-confirmed acceptance. URL resolution/reuse, controlled recovery, scoped freshness and progress/error readback are merged in PR #16; the maintainer reports local tests passed and services started, and Git contains squash merge PR #16. On-demand human review has maintainer-confirmed local tests and service restart; PR review, CI and merge remain pending.
 
 ## Product vision
 
@@ -15,7 +15,7 @@ MaintainerLens is an evidence-driven, server-side investigation platform for mai
 | M2 | Public Issue snapshot HTTP→outbox→RabbitMQ→Worker E2E | Completed/merged, PR #7 (historical) |
 | M3 | Repository source/documentation and Issue/PR knowledge, RAG, evaluation | Completed and merged (#8–#10); evaluation limits below |
 | M4 | Evidence-grounded LangGraph investigation, tool calling, reports, Worker integration | Completed/merged through PR #14; maintainer-confirmed regression/infrastructure/paid acceptance; broader report-quality evaluation remains M6 |
-| M5 | Workflow checkpoints, state recovery, durable memory, HITL | In progress — checkpoint/recovery merged; URL reuse locally accepted, PR/CI pending; review/memory pending |
+| M5 | Workflow checkpoints, state recovery, durable memory, HITL | In progress — checkpoint/recovery and URL reuse merged; human review locally accepted, PR/CI pending; memory pending |
 | M6 | V1 release readiness, evaluation, security, Web UI | Planned |
 | V2 | Authenticated private repository and approved GitHub write operations | Future |
 
@@ -216,7 +216,7 @@ release acceptance concern; citation validity is not proof of correctness.
 - [x] Maintainer applied the checkpoint migration and confirmed acceptance passed.
 - [x] Git contains checkpoint squash merge PR #15; deployment is not implied.
 
-### URL product workflow bridge — maintainer-confirmed local acceptance, PR/CI pending
+### URL product workflow bridge — merged in PR #16, local acceptance confirmed
 
 - [x] Resolve repeated URL intent into active/cached/recovered/new investigation.
 - [x] Coordinate concurrent checks and submissions without HTTP inside SQL locks.
@@ -227,15 +227,19 @@ release acceptance concern; citation validity is not proof of correctness.
   Outbox publication under the original Runner.
 - [x] Persist claim-fenced phases and safe errors with bounded API history.
 - [x] Maintainer reports local tests passed and application services started after the migration/testing workflow. The assistant did not execute these checks.
-- [ ] Reviewed PR, observed green CI and squash merge.
+- [x] Git contains URL reuse squash merge PR #16. No independent CI observation is claimed here.
 
 ### Later rounds: on-demand human decisions and trusted memory
 
-- [ ] Rounds 4–5: persist pause/review intent and versioned decisions; release the
-  lease while waiting, and resume through transactional Outbox publication.
-- [ ] Normal reports remain automatic. Adjustable application-budget exhaustion
-  can trigger human intervention; truncated/invalid analysis, provenance and claim
-  boundaries or provider hard limits cannot be approved away.
+- [x] Rounds 4–5 implementation: persist typed review requests and immutable
+  decisions; release claim/lease while waiting; resume through transactional Outbox.
+- [x] Supply request-scoped idempotency, independent recovery quotas, complete
+  partial-analysis acceptance and deployment-configured output allowances.
+- [x] Normal reports remain automatic. Only preparation budgets/deadlines and
+  analysis generation limits trigger review. Invalid JSON/citations, ownership,
+  Graph/tool deadlines and provider hard limits retain their boundaries.
+- [x] Maintainer confirmed local tests passed and application services restarted after the migration/acceptance workflow. The assistant did not execute these checks.
+- [ ] Reviewed human-review PR, observed green CI and squash merge.
 - [ ] Round 6: trusted evidence-linked memory, applicable revisions, revalidation,
   revocation/retention and retrieval controls; no unverified guesses as facts.
 - [ ] Round 7: recovery/review/memory fault acceptance and documentation closure.

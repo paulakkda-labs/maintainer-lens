@@ -41,6 +41,12 @@ class InvestigationTask(Base):
     execution_generation: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
+    user_recovery_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    budget_resume_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     failure_retryable: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
@@ -99,6 +105,12 @@ class InvestigationTask(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "user_recovery_count BETWEEN 0 AND 3", name="ck_tasks_user_recovery_count"
+        ),
+        CheckConstraint(
+            "budget_resume_count BETWEEN 0 AND 3", name="ck_tasks_budget_resume_count"
+        ),
         CheckConstraint(
             "execution_generation >= 0", name="ck_tasks_execution_generation"
         ),
