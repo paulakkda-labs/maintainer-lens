@@ -84,13 +84,13 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture
-async def workflow(session_factory, monkeypatch):
+@pytest.fixture(params=["en", "zh"])
+async def workflow(session_factory, monkeypatch, request):
     repository = f"workflow-acceptance/repo-{uuid4().hex}"
     now = datetime.now(UTC)
     index_id = uuid4()
     config = GraphCheckpointConfig(
-        response_language="zh",
+        response_language=request.param,
         max_search_rounds=3,
         timeout_seconds=10.0,
         search_strategy="deterministic",
@@ -258,16 +258,23 @@ async def _submit(scope):
         json={
             "issue_url": f"https://github.com/{scope.repository}/issues/123",
             "knowledge_budget_profile": "small",
+            "response_language": scope.config.response_language,
         },
     )
     assert response.status_code in (200, 202), response.text
-    return response.json()
+    body = response.json()
+    assert body["response_language"] == scope.config.response_language
+    return body
 
 
 async def _detail(scope, task_id):
     response = await scope.api.get(f"/investigations/{task_id}")
     assert response.status_code == 200, response.text
-    return response.json()
+    body = response.json()
+    assert body["response_language"] == scope.config.response_language
+    if body["result"] is not None:
+        assert body["result"]["response_language"] == scope.config.response_language
+    return body
 
 
 async def _reviews(scope, task_id):
@@ -290,6 +297,7 @@ async def _deliver(scope, task_id, generation, processor, *, final_attempt=False
             issue_number=123,
             auto_prepare_knowledge=True,
             generation=generation,
+            response_language=scope.config.response_language,
         ),
         scope.factory,
         processor,
@@ -442,13 +450,28 @@ async def test_approved_output_survives_user_recovery_without_repeating_retrieva
             "small"
         ).model_dump(mode="json")
         assert run.execution_payload["llm_max_output_tokens"] == 4096
-        assert run.fingerprint == review["context"]["run_fingerprint"]
-        generations = await session.scalars(
-            select(InvestigationOutboxEvent.generation)
-            .where(InvestigationOutboxEvent.task_id == task_id)
-            .order_by(InvestigationOutboxEvent.generation)
+        assert (
+            task.response_language
+            == run.request_payload["response_language"]
+            == run.execution_payload["response_language"]
+            == scope.config.response_language
         )
-        assert list(generations) == [0, 1, 2]
+        assert run.fingerprint == review["context"]["run_fingerprint"]
+        deliveries = list(
+            await session.scalars(
+                select(InvestigationOutboxEvent)
+                .where(InvestigationOutboxEvent.task_id == task_id)
+                .order_by(InvestigationOutboxEvent.generation)
+            )
+        )
+        assert [delivery.generation for delivery in deliveries] == [0, 1, 2]
+        assert all(
+            InvestigationRequestedMessage.model_validate(
+                delivery.payload
+            ).response_language
+            == scope.config.response_language
+            for delivery in deliveries
+        )
     events = (await scope.api.get(f"/investigations/{task_id}/events")).json()["events"]
     assert any(
         event["kind"] == "failed" and event["generation"] == 1 for event in events
@@ -556,12 +579,21 @@ async def test_accepted_analysis_survives_cancel_after_result_commit_without_ear
             )
             == 1
         )
-        generations = await session.scalars(
-            select(InvestigationOutboxEvent.generation)
-            .where(InvestigationOutboxEvent.task_id == task_id)
-            .order_by(InvestigationOutboxEvent.generation)
+        deliveries = list(
+            await session.scalars(
+                select(InvestigationOutboxEvent)
+                .where(InvestigationOutboxEvent.task_id == task_id)
+                .order_by(InvestigationOutboxEvent.generation)
+            )
         )
-        assert list(generations) == [0, 1]
+        assert [delivery.generation for delivery in deliveries] == [0, 1]
+        assert all(
+            InvestigationRequestedMessage.model_validate(
+                delivery.payload
+            ).response_language
+            == scope.config.response_language
+            for delivery in deliveries
+        )
 
 
 async def test_rejecting_new_investigation_preserves_old_report_and_blocks_resubmission(

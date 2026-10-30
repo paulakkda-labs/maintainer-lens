@@ -77,6 +77,7 @@ async def test_outbox_dispatch_success(
             issue_number=3712,
             source_index_id=None,
             auto_prepare_knowledge=False,
+            response_language="en",
         )
 
         async with session_factory() as session:

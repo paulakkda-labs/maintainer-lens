@@ -160,6 +160,7 @@ async def test_url_api_queues_auto_mode_with_default_budget(monkeypatch):
         repository=REPOSITORY,
         issue_number=123,
         knowledge_budget_profile="standard",
+        response_language="en",
     )
     assert parse_issue_url("https://github.com/org/repo/issues/123").issue_number == 123
 
