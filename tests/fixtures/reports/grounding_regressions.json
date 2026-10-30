@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "observed_on": "2026-10-30",
+  "cases": [
+    {
+      "id": "grounding-reporter-attribution",
+      "repository": "pallets/itsdangerous",
+      "issue_number": 429,
+      "observed_issue_state": "open",
+      "review_focus": [
+        "Check each finding against its own cited saved analysis excerpt. A generic serializer document does not independently establish what this Issue's reporter observed.",
+        "Keep input-only symptoms attributed in the summary when no supplied excerpt supports them. Distinguish proposed PR changes from merged implementation."
+      ],
+      "unsupported_claims": [
+        "Attaching a generic documentation citation to the reporter's max_age observation when that excerpt does not contain the observation.",
+        "Treating a rejected PR description as proof of the actual implementation or a released fix."
+      ]
+    },
+    {
+      "id": "grounding-keyword-scope",
+      "repository": "pallets/itsdangerous",
+      "issue_number": 389,
+      "observed_issue_state": "open",
+      "review_focus": [
+        "Trace the exact parameters and call arguments in the saved implementation. Receiving kwargs is distinct from using or forwarding them.",
+        "Do not confuse loads parameters with same-named local variables in iter_unsigners or fallback signer configuration. Verify any claim against the actual revision under analysis."
+      ],
+      "unsupported_claims": [
+        "Claiming loads forwards its kwargs to signature selection when the cited implementation only passes salt.",
+        "Inferring a maintainer's design intent or an endorsed fix from unrelated PRs."
+      ]
+    },
+    {
+      "id": "grounding-config-semantics",
+      "repository": "pypa/sampleproject",
+      "issue_number": 225,
+      "observed_issue_state": "open",
+      "review_focus": [
+        "Assess hypotheses and next-action suggestions as well as findings. Distinguish license expressions, license file paths and classifier labels.",
+        "If replacement field semantics are not established by supplied evidence, name that missing check rather than inventing an exact migration. Check all supplied line ranges before asking for already visible information."
+      ],
+      "unsupported_claims": [
+        "Moving a License classifier string into project.license-files, which expects license file path patterns.",
+        "Claiming a migration was executed or removed warnings without execution evidence."
+      ]
+    }
+  ]
+}

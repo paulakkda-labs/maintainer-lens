@@ -33,15 +33,18 @@ def anyio_backend():
     return "asyncio"
 
 
-def _hit(content, number=1):
+def _hit(content, number=1, *, file_path=None):
+    file_path = file_path or f"config-{number}.toml"
     return HybridSearchResult(
         index_id=INDEX,
         chunk_key=f"chunk-{number}",
         repository=REPOSITORY,
         commit_sha="a" * 40,
         blob_sha="b" * 40,
-        file_path=f"config-{number}.toml",
-        language="toml",
+        file_path=file_path,
+        language={"py": "python", "rst": "rst"}.get(
+            file_path.rsplit(".", 1)[-1], "toml"
+        ),
         kind="text",
         symbol=None,
         start_line=1,
@@ -177,7 +180,143 @@ async def test_top_five_bound_and_last_context_survive_no_novel_follow_up():
     assert result.next_step == "needs_more_evidence"
 
 
-@pytest.mark.parametrize("previous_version", ["investigation-v1", "investigation-v2"])
+@pytest.mark.parametrize("language", ["en", "zh"])
+@pytest.mark.parametrize(
+    "scenario", ["reporter-attribution", "keyword-scope", "config-semantics"]
+)
+async def test_grounding_constraints_and_original_excerpts_reach_provider(
+    language, scenario
+):
+    if scenario == "reporter-attribution":
+        content = (
+            "Serializer provides dumps and loads.\n"
+            "For signature age validation, see the timed serializer documentation.\n"
+        )
+        file_path = "docs/serializer.rst"
+        body = "The reporter says loads(token, max_age=-1) silently ignores max_age."
+        statement = None
+        expected_rules = [
+            "Issue input is reporter context, not independent corroboration",
+            "General documentation about the same API does not establish",
+            "Every factual clause in a finding",
+        ]
+        question = "Which implementation or execution evidence corroborates the reported max_age behavior?"
+    elif scenario == "keyword-scope":
+        content = (
+            "def iter_unsigners(salt=None):\n"
+            "    kwargs = {'digest_method': 'sha256'}\n"
+            "    return choose_signer(salt, **kwargs)\n\n"
+            "def loads(payload, salt=None, **kwargs):\n"
+            "    signer = iter_unsigners(salt)\n"
+            "    return load_payload(signer.unsign(payload))\n"
+        )
+        file_path = "serializer.py"
+        body = "Does loads forward its keyword arguments when deserializing?"
+        statement = "The shown loads passes salt to iter_unsigners without forwarding its kwargs."
+        expected_rules = [
+            "Trace arguments within the exact callable and scope shown",
+            "Receiving an\n    argument does not mean using or forwarding it",
+            "a local kwargs in another function",
+        ]
+        question = "Does this implementation reproduce the caller's reported failure?"
+    else:
+        content = (
+            "[project]\n"
+            'license = {file = "LICENSE.txt"}\n'
+            'classifiers = ["License :: OSI Approved :: MIT License"]\n'
+        )
+        file_path = "pyproject.toml"
+        body = "The reporter observed license metadata deprecation warnings."
+        statement = "The supplied project configuration declares a license classifier."
+        expected_rules = [
+            "Configuration fields have distinct meanings and value types",
+            "file paths and glob patterns are not interchangeable",
+            "Apply these factual checks to hypotheses and suggested next actions too",
+            "ask\n    for its schema or documentation instead of inventing a concrete migration",
+        ]
+        question = "Which documented field definitions and backend version support a replacement configuration?"
+
+    analysis = InvestigationAnalysis(
+        summary="The supplied evidence supports only the observations below.",
+        findings=[{"statement": statement, "evidence_ids": [f"source:{INDEX}:chunk-1"]}]
+        if statement
+        else [],
+        hypotheses=[],
+        unanswered_questions=[question],
+    )
+    payloads = []
+
+    def transport(request):
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        prompt = payload["messages"][0]["content"]
+        for rule in expected_rules:
+            assert rule in prompt
+        assert ("in Simplified Chinese" if language == "zh" else "in English") in prompt
+        assert (
+            "Distinguish selected line ranges from explicitly truncated content"
+            in prompt
+        )
+        user = json.loads(payload["messages"][1]["content"])
+        assert user["issue_body"] == body
+        assert (
+            user["evidence"][0]["content"]
+            == f"{file_path}:1-{len(content.splitlines())}\n{content}"
+        )
+        assert payload["max_tokens"] == 4096
+        assert payload["response_format"] == {"type": "json_object"}
+        if scenario == "reporter-attribution":
+            assert "max_age" not in user["evidence"][0]["content"]
+        if scenario == "config-semantics":
+            assert "license-files" not in user["evidence"][0]["content"]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": analysis.model_dump_json()},
+                    }
+                ]
+            },
+        )
+
+    source = AsyncMock(return_value=[_hit(content, file_path=file_path)])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        analyzer = create_llm_analyzer(
+            client,
+            base_url="https://model.invalid/v1",
+            api_key="test-key",
+            model_name="deployment-configured-model",
+        )
+        result = await _execute(
+            source,
+            analyzer,
+            language=language,
+            issue_title=scenario,
+            issue_body=body,
+        )
+    assert len(payloads) == source.await_count == 1
+    assert result.preliminary_analysis == analysis
+    assert result.next_step == "needs_more_evidence"
+    assert (
+        result.analysis_evidence
+        == json.loads(payloads[0]["messages"][1]["content"])["evidence"]
+    )
+    assert result.source_evidence[0]["content"] == content
+    # This verifies contract/context delivery through a real Graph, not semantic model obedience.
+
+
+@pytest.mark.parametrize(
+    "previous_version",
+    [
+        "investigation-v1",
+        "investigation-v2",
+        "investigation-v3",
+        "investigation-v4",
+        "investigation-v5",
+    ],
+)
 def test_changed_analysis_semantics_reject_previous_checkpoint_execution(
     previous_version,
 ):
@@ -198,7 +337,7 @@ def test_changed_analysis_semantics_reject_previous_checkpoint_execution(
         llm_max_output_tokens=4096,
         thinking_enabled=False,
     )
-    assert current.graph_version == "investigation-v3"
+    assert current.graph_version == "investigation-v6"
     assert validate_execution_compatibility(current) == current
     with pytest.raises(InvalidInvestigationCheckpointError, match="incompatible"):
         validate_execution_compatibility(
@@ -270,7 +409,7 @@ async def test_unrelated_evidence_can_produce_a_valid_report_without_findings(la
     assert len(result.source_evidence) == len(result.analysis_evidence) == 1
 
 
-async def test_empty_finding_citations_still_fail_without_a_second_provider_request():
+async def test_empty_finding_citations_still_fail_after_one_corrective_request():
     calls = []
     invalid = {
         "summary": "The supplied evidence is insufficient.",
@@ -315,4 +454,6 @@ async def test_empty_finding_citations_still_fail_without_a_second_provider_requ
     assert len(errors) == 1
     assert errors[0]["loc"] == ("findings", 0, "evidence_ids")
     assert errors[0]["type"] == "too_short"
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert calls[1]["messages"][:2] == calls[0]["messages"]
+    assert "Validation issues (data)" in calls[1]["messages"][-1]["content"]

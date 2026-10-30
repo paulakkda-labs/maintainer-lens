@@ -1,7 +1,6 @@
 # On-demand investigation review and approved budget versions
 
-Status: Accepted; merged in PR #17, with maintainer-confirmed local tests and
-service restart. Git merge history verified; CI not independently inspected.
+Status: Accepted.
 Date: 2026-10-29.
 
 ## Context
@@ -70,17 +69,15 @@ no competing runner, credential UI, model registry, long-term memory, scheduled
 expiry job or exactly-once external-call guarantee. Review endpoints use the
 current single-operator V1 deployment/access model.
 
-Validation is supplied as offline schema/API/real-Graph tests, opt-in PostgreSQL
+Validation includes offline schema/API/real-Graph tests, opt-in PostgreSQL
 transaction/lease/idempotency races, and actual API→Outbox→RabbitMQ→default Worker
-scenarios with simulated providers. The assistant does not execute migrations,
-pytest or paid provider calls. See README for manual acceptance commands.
+scenarios with simulated providers. See the [testing guide](../DEVELOPMENT.md)
+for execution and infrastructure-isolation rules.
 
 Combined workflow closure acceptance is supplied separately for approved-budget
 user recovery, interruption between accepted-result commit and task success,
 and historical report retention after a newer Task is rejected. These additional
-tests passed per maintainer feedback and are merged in PR #18; the assistant
-did not execute them or independently inspect CI. Broader semantic report
-quality and deployed HTTP acceptance remain separate M6 concerns.
-The separate project-memory proposal is deferred and is not a prerequisite for
-this review workflow or M5 closure. Accepting a partial analysis does not certify
+tests exercise persistence and recovery boundaries. Semantic report quality and
+deployed HTTP acceptance remain separate checks. Project memory is not a
+prerequisite for this review workflow. Accepting a stage analysis does not certify
 it as a reusable project fact.

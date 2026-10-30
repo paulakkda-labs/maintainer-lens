@@ -146,6 +146,7 @@ def _make_transport(
     captured_requests: list[dict],
     *,
     tool_name: str = "search_source",
+    feedback: dict | None = None,
 ) -> httpx.MockTransport:
     def handle(request: httpx.Request) -> httpx.Response:
         captured_requests.append(json.loads(request.content))
@@ -157,7 +158,9 @@ def _make_transport(
             )
 
         if len(captured_requests) == 2:
-            return httpx.Response(200, json=_tool_feedback())
+            return httpx.Response(
+                200, json=feedback if feedback is not None else _tool_feedback()
+            )
 
         raise AssertionError("Unexpected additional LLM request")
 
@@ -236,6 +239,13 @@ async def test_graph_uses_one_selected_tool_and_reanalyzes() -> None:
     )
 
     second_analysis_request = analyzer.await_args_list[1].args[0]
+    assert "相关源码已检索。" not in json.dumps(
+        second_analysis_request, ensure_ascii=False
+    )
+    assert (
+        "acknowledge receipt in one short sentence"
+        in requests[1]["messages"][0]["content"]
+    )
 
     evidence_ids = {
         evidence["evidence_id"] for evidence in second_analysis_request["evidence"]
@@ -251,6 +261,48 @@ async def test_graph_uses_one_selected_tool_and_reanalyzes() -> None:
 
     assert tool_message["role"] == "tool"
     assert tool_message["tool_call_id"] == "call_test_123"
+
+
+@pytest.mark.parametrize("failure", ["length", "unexpected-tool-call"])
+async def test_graph_rejects_invalid_feedback_before_next_analysis_without_retry(
+    failure,
+):
+    feedback = _tool_feedback()
+    if failure == "length":
+        feedback["choices"][0]["finish_reason"] = "length"
+    else:
+        feedback["choices"][0]["message"]["tool_calls"] = [{"id": "unapproved"}]
+    requests = []
+    history = AsyncMock(return_value=(_history_hit(),))
+    source = AsyncMock(
+        side_effect=[[_source_hit("chunk-001")], [_source_hit("chunk-002")]]
+    )
+    analyzer = AsyncMock(return_value=_analysis("history:item:3782", needs_more=True))
+    async with httpx.AsyncClient(
+        transport=_make_transport(TOOL_QUERY, requests, feedback=feedback)
+    ) as client:
+        runner = create_tool_search_runner(
+            client,
+            base_url="https://model.invalid/v1",
+            api_key="test-key",
+            model_name="configured-model",
+            history_searcher=history,
+            source_searcher=source,
+        )
+        graph = build_investigation_graph(
+            history,
+            source_searcher=source,
+            analyzer=analyzer,
+            tool_search_runner=runner,
+            max_search_rounds=2,
+        )
+        with pytest.raises(ValueError, match="did not finish after the tool result"):
+            await graph.ainvoke(_issue_input())
+    assert len(requests) == 2
+    assert source.await_count == 2
+    history.assert_awaited_once()
+    analyzer.assert_awaited_once()
+    assert client.is_closed
 
 
 async def test_duplicate_query_stops_before_second_retrieval() -> None:

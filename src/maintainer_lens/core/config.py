@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     )
 
     database_url: SecretStr
-    redis_url: SecretStr
     rabbitmq_url: SecretStr
     github_token: SecretStr | None = None
 

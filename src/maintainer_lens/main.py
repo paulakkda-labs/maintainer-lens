@@ -7,7 +7,6 @@ from fastapi import FastAPI
 
 from maintainer_lens.api.router import router as api_router
 from maintainer_lens.clients.rabbitmq import create_rabbitmq_connection
-from maintainer_lens.clients.redis import create_redis_client
 from maintainer_lens.core.config import get_settings
 from maintainer_lens.db.engine import create_db_engine
 from maintainer_lens.db.session import create_session_factory
@@ -23,10 +22,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         engine = create_db_engine(settings.database_url.get_secret_value())
         stack.push_async_callback(engine.dispose)
         app.state.session_factory = create_session_factory(engine)
-
-        redis_client = create_redis_client(settings.redis_url.get_secret_value())
-        stack.push_async_callback(redis_client.aclose)
-        app.state.redis_client = redis_client
 
         rabbitmq_connection = await create_rabbitmq_connection(
             settings.rabbitmq_url.get_secret_value()

@@ -69,6 +69,6 @@ The authoritative implementation is the
 [adaptive chunker](../src/maintainer_lens/services/source_chunker.py).
 
 Existing retrieval measurements use small Python-oriented samples. The initial
-[report review set](REPORT_QUALITY.md) uses one small Python sample repository;
-it does not validate report quality for the other listed languages. Neither
+[report review cases](REPORT_QUALITY.md#existing-review-cases) cover a small set of
+Python repositories; they do not validate report quality for other listed languages. Neither
 language registration nor a successful pipeline proves semantic accuracy.

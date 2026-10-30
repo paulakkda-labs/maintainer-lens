@@ -16,7 +16,7 @@ from maintainer_lens.agents.investigation_analysis import (
 from maintainer_lens.schemas.investigation_contracts import InvestigationInput
 
 # Analysis context and prompt semantics are part of frozen execution identity.
-GRAPH_EXECUTION_VERSION = "investigation-v3"
+GRAPH_EXECUTION_VERSION = "investigation-v6"
 CHECKPOINT_STORAGE_VERSION = 1
 
 

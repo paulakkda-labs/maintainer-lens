@@ -507,7 +507,6 @@ def test_deployment_budget_configuration_does_not_restrict_model_names():
     kwargs = dict(
         _env_file=None,
         database_url="postgresql+asyncpg://test:test@localhost/test",
-        redis_url="redis://localhost/0",
         rabbitmq_url="amqp://test:test@localhost/",
         llm_base_url="https://user-provider.example/v1",
         llm_model_name="my-custom-model",

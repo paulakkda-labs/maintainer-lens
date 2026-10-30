@@ -1,5 +1,7 @@
 """Unit tests for application settings and configuration caching."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import SecretStr, ValidationError
 
@@ -7,15 +9,12 @@ from maintainer_lens.core.config import Settings, get_settings
 
 
 @pytest.fixture(autouse=True)
-def mock_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def mock_required_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Provide isolated test credentials for required settings."""
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(
         "DATABASE_URL",
         "postgresql+asyncpg://test:db_password@localhost:5432/test_db",
-    )
-    monkeypatch.setenv(
-        "REDIS_URL",
-        "redis://:redis_password@localhost:6379/0",
     )
     monkeypatch.setenv(
         "RABBITMQ_URL",
@@ -28,13 +27,12 @@ def test_required_settings() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.database_url.get_secret_value().startswith("postgresql+asyncpg://")
-    assert settings.redis_url.get_secret_value().startswith("redis://")
     assert settings.rabbitmq_url.get_secret_value().startswith("amqp://")
 
 
 @pytest.mark.parametrize(
     "variable",
-    ["DATABASE_URL", "REDIS_URL", "RABBITMQ_URL"],
+    ["DATABASE_URL", "RABBITMQ_URL"],
 )
 def test_missing_required_settings(
     monkeypatch: pytest.MonkeyPatch,
@@ -80,11 +78,9 @@ def test_secret_values_are_masked() -> None:
     settings = Settings(_env_file=None)
 
     assert isinstance(settings.database_url, SecretStr)
-    assert isinstance(settings.redis_url, SecretStr)
     assert isinstance(settings.rabbitmq_url, SecretStr)
 
     assert "db_password" not in repr(settings)
-    assert "redis_password" not in repr(settings)
     assert "rabbitmq_password" not in repr(settings)
 
     assert settings.database_url.get_secret_value().find("db_password") != -1

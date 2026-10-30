@@ -14,20 +14,15 @@ from maintainer_lens.main import app
 def test_lifespan_initializes_and_releases_resources() -> None:
     """Verify that application resources are initialized and released."""
     database_url = "postgresql+asyncpg://test:password@localhost:5432/test_db"
-    redis_url = "redis://:password@localhost:6379/0"
     rabbitmq_url = "amqp://guest:guest@localhost:5672/test"
 
     settings = SimpleNamespace(
         database_url=SecretStr(database_url),
-        redis_url=SecretStr(redis_url),
         rabbitmq_url=SecretStr(rabbitmq_url),
     )
 
     mock_engine = Mock()
     mock_engine.dispose = AsyncMock()
-
-    mock_redis_client = Mock()
-    mock_redis_client.aclose = AsyncMock()
 
     mock_session_factory = Mock()
 
@@ -60,10 +55,6 @@ def test_lifespan_initializes_and_releases_resources() -> None:
             return_value=mock_session_factory,
         ) as mock_create_session_factory,
         patch(
-            "maintainer_lens.main.create_redis_client",
-            return_value=mock_redis_client,
-        ) as mock_create_redis_client,
-        patch(
             "maintainer_lens.main.create_rabbitmq_connection",
             new_callable=AsyncMock,
             return_value=mock_connection,
@@ -73,10 +64,8 @@ def test_lifespan_initializes_and_releases_resources() -> None:
             assert client.get("/health/live").status_code == 200
 
             assert app.state.session_factory is mock_session_factory
-            assert app.state.redis_client is mock_redis_client
 
             mock_engine.dispose.assert_not_awaited()
-            mock_redis_client.aclose.assert_not_awaited()
 
             assert app.state.rabbitmq_channel is mock_channel
             assert app.state.rabbitmq_exchange is mock_exchange
@@ -87,10 +76,8 @@ def test_lifespan_initializes_and_releases_resources() -> None:
         mock_get_settings.assert_called_once_with()
         mock_create_engine.assert_called_once_with(database_url)
         mock_create_session_factory.assert_called_once_with(mock_engine)
-        mock_create_redis_client.assert_called_once_with(redis_url)
 
         mock_engine.dispose.assert_awaited_once_with()
-        mock_redis_client.aclose.assert_awaited_once_with()
 
         mock_create_rabbitmq_connection.assert_awaited_once_with(rabbitmq_url)
 
@@ -152,16 +139,14 @@ def test_lifespan_initializes_and_releases_resources() -> None:
         assert mock_queue.bind.await_count == 3
 
 
-def test_lifespan_releases_engine_when_redis_initialization_fails() -> None:
-    """Verify that database resources are released after startup failure."""
+def test_lifespan_releases_engine_when_rabbitmq_connection_fails() -> None:
+    """Release the database engine if the broker connection fails at startup."""
     database_url = "postgresql+asyncpg://test:password@localhost:5432/test_db"
-    redis_url = "redis://:password@localhost:6379/0"
-
+    rabbitmq_url = "amqp://guest:guest@localhost:5672/test"
     settings = SimpleNamespace(
         database_url=SecretStr(database_url),
-        redis_url=SecretStr(redis_url),
+        rabbitmq_url=SecretStr(rabbitmq_url),
     )
-
     mock_engine = Mock()
     mock_engine.dispose = AsyncMock()
 
@@ -170,14 +155,16 @@ def test_lifespan_releases_engine_when_redis_initialization_fails() -> None:
         patch("maintainer_lens.main.create_db_engine", return_value=mock_engine),
         patch("maintainer_lens.main.create_session_factory"),
         patch(
-            "maintainer_lens.main.create_redis_client",
-            side_effect=RuntimeError("Redis initialization failed"),
-        ),
+            "maintainer_lens.main.create_rabbitmq_connection",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("RabbitMQ connection failed"),
+        ) as connect,
     ):
-        with pytest.raises(RuntimeError, match="Redis initialization failed"):
+        with pytest.raises(RuntimeError, match="RabbitMQ connection failed"):
             with TestClient(app):
                 pass
 
+    connect.assert_awaited_once_with(rabbitmq_url)
     mock_engine.dispose.assert_awaited_once_with()
 
 
@@ -187,15 +174,11 @@ def test_lifespan_releases_resources_when_rabbitmq_channel_fails() -> None:
         database_url=SecretStr(
             "postgresql+asyncpg://test:password@localhost:5432/test_db"
         ),
-        redis_url=SecretStr("redis://:password@localhost:6379/0"),
         rabbitmq_url=SecretStr("amqp://guest:guest@localhost:5672/test"),
     )
 
     mock_engine = Mock()
     mock_engine.dispose = AsyncMock()
-
-    mock_redis_client = Mock()
-    mock_redis_client.aclose = AsyncMock()
 
     mock_connection = Mock()
     mock_connection.channel = AsyncMock(
@@ -207,10 +190,6 @@ def test_lifespan_releases_resources_when_rabbitmq_channel_fails() -> None:
         patch("maintainer_lens.main.get_settings", return_value=settings),
         patch("maintainer_lens.main.create_db_engine", return_value=mock_engine),
         patch("maintainer_lens.main.create_session_factory"),
-        patch(
-            "maintainer_lens.main.create_redis_client",
-            return_value=mock_redis_client,
-        ),
         patch(
             "maintainer_lens.main.create_rabbitmq_connection",
             new_callable=AsyncMock,
@@ -227,7 +206,6 @@ def test_lifespan_releases_resources_when_rabbitmq_channel_fails() -> None:
     )
 
     mock_connection.close.assert_awaited_once_with()
-    mock_redis_client.aclose.assert_awaited_once_with()
     mock_engine.dispose.assert_awaited_once_with()
 
 
@@ -236,9 +214,6 @@ async def test_lifespan_cleans_up_when_topology_declaration_fails():
     """Close initialized resources when RabbitMQ topology declaration fails."""
     engine = MagicMock()
     engine.dispose = AsyncMock()
-
-    redis_client = MagicMock()
-    redis_client.aclose = AsyncMock()
 
     rabbitmq_connection = MagicMock()
     rabbitmq_connection.close = AsyncMock()
@@ -251,7 +226,6 @@ async def test_lifespan_cleans_up_when_topology_declaration_fails():
         database_url=SecretStr(
             "postgresql+asyncpg://test:password@localhost:5432/test_db"
         ),
-        redis_url=SecretStr("redis://:password@localhost:6379/0"),
         rabbitmq_url=SecretStr("amqp://guest:guest@localhost:5672/test"),
     )
 
@@ -267,10 +241,6 @@ async def test_lifespan_cleans_up_when_topology_declaration_fails():
         patch(
             "maintainer_lens.main.create_session_factory",
             return_value=MagicMock(),
-        ),
-        patch(
-            "maintainer_lens.main.create_redis_client",
-            return_value=redis_client,
         ),
         patch(
             "maintainer_lens.main.create_rabbitmq_connection",
@@ -293,5 +263,4 @@ async def test_lifespan_cleans_up_when_topology_declaration_fails():
     )
     rabbitmq_channel.close.assert_awaited_once()
     rabbitmq_connection.close.assert_awaited_once()
-    redis_client.aclose.assert_awaited_once()
     engine.dispose.assert_awaited_once()

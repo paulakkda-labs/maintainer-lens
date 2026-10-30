@@ -368,7 +368,16 @@ async def test_model_change_starts_new_task_without_rewriting_frozen_run(memory)
     assert run.request_payload == _request().model_dump(mode="json")
 
 
-@pytest.mark.parametrize("previous_version", ["investigation-v1", "investigation-v2"])
+@pytest.mark.parametrize(
+    "previous_version",
+    [
+        "investigation-v1",
+        "investigation-v2",
+        "investigation-v3",
+        "investigation-v4",
+        "investigation-v5",
+    ],
+)
 async def test_analysis_version_change_keeps_old_report_and_queues_a_new_task(
     memory, previous_version
 ):
@@ -382,7 +391,7 @@ async def test_analysis_version_change_keeps_old_report_and_queues_a_new_task(
 
     result = await _resolve(memory)
 
-    assert _config().graph_version == "investigation-v3"
+    assert _config().graph_version == "investigation-v6"
     assert result.decision == "created" and result.task_id != "original"
     assert result.previous_task_id == result.report_task_id == "original"
     assert result.freshness.reason_code == "execution_changed"
@@ -398,7 +407,7 @@ async def test_analysis_version_change_queues_new_work_after_permanent_output_fa
     task = memory.seed(status="failed", retryable=False)
     del memory.records[(InvestigationResultRecord, task.id)]
     record = memory.records[(InvestigationGraphRun, task.id)]
-    previous_execution = _config(graph_version="investigation-v2")
+    previous_execution = _config(graph_version="investigation-v5")
     record.execution_payload = previous_execution.model_dump(mode="json")
     record.fingerprint = execution_fingerprint(_request(), previous_execution)
     previous_fingerprint = record.fingerprint

@@ -1,5 +1,6 @@
 """Tests for one bounded LLM-selected search tool cycle."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -91,15 +92,20 @@ def _tool_response(
     }
 
 
-def _final_response() -> dict:
+def _final_response(
+    *,
+    finish_reason="stop",
+    content="The search returned relevant evidence.",
+    tool_calls=None,
+) -> dict:
+    message = {"role": "assistant", "content": content}
+    if tool_calls is not None:
+        message["tool_calls"] = tool_calls
     return {
         "choices": [
             {
-                "finish_reason": "stop",
-                "message": {
-                    "role": "assistant",
-                    "content": "The search returned relevant evidence.",
-                },
+                "finish_reason": finish_reason,
+                "message": message,
             }
         ]
     }
@@ -109,8 +115,10 @@ def _final_response() -> dict:
     "tool_name",
     ["search_history", "search_source"],
 )
+@pytest.mark.parametrize("language", ["en", "zh"])
 async def test_model_selects_and_executes_allowed_tool(
     tool_name: str,
+    language: str,
 ) -> None:
     requests: list[dict] = []
 
@@ -141,7 +149,7 @@ async def test_model_selects_and_executes_allowed_tool(
             model_name="deepseek-flash",
             repository="encode/httpx",
             question="Where is cancellation cleanup handled?",
-            response_language="en",
+            response_language=language,
             history_searcher=history_searcher,
             source_searcher=source_searcher,
             source_index_id=INDEX_ID,
@@ -158,6 +166,8 @@ async def test_model_selects_and_executes_allowed_tool(
     second_request = requests[1]
 
     assert first_request["tool_choice"] == "required"
+    assert first_request["max_tokens"] == 600
+    assert "Choose exactly ONE" in first_request["messages"][0]["content"]
     assert first_request["thinking"] == {"type": "disabled"}
     assert {tool["function"]["name"] for tool in first_request["tools"]} == {
         "search_history",
@@ -165,12 +175,23 @@ async def test_model_selects_and_executes_allowed_tool(
     }
 
     assert second_request["tool_choice"] == "none"
+    assert second_request["max_tokens"] == 500
+    assert second_request["thinking"] == {"type": "disabled"}
+    feedback_prompt = second_request["messages"][0]["content"]
+    assert "acknowledge receipt in one short sentence" in feedback_prompt
+    assert "Do not write an investigation report" in feedback_prompt
+    assert "Do not call any tool" in feedback_prompt
+    assert "untrusted data" in feedback_prompt
+    assert "Choose exactly ONE" not in feedback_prompt
+    assert ("Simplified Chinese" if language == "zh" else "English") in feedback_prompt
+    assert second_request["messages"][1] == first_request["messages"][1]
     assert second_request["messages"][-2]["role"] == "assistant"
 
     tool_message = second_request["messages"][-1]
 
     assert tool_message["role"] == "tool"
     assert tool_message["tool_call_id"] == "call_123"
+    assert second_request["messages"][-2]["tool_calls"][0]["id"] == "call_123"
 
     returned_evidence = json.loads(tool_message["content"])["evidence"]
 
@@ -191,6 +212,135 @@ async def test_model_selects_and_executes_allowed_tool(
         )
         history_searcher.assert_not_awaited()
         assert result["evidence"][0]["evidence_id"] == (f"source:{INDEX_ID}:chunk-001")
+
+
+@pytest.mark.parametrize(
+    "finish_reason,tool_calls,expected_reason,expected_calls",
+    [
+        ("length", None, "length", False),
+        ("content_filter", None, "content_filter", False),
+        ("tool_calls", [{"id": "unexpected"}], "tool_calls", True),
+        ("function_call", None, "function_call", False),
+        ("PRIVATE_PROVIDER_REASON", None, "unknown", False),
+        ("stop", [{"id": "unexpected"}], "stop", True),
+    ],
+)
+async def test_incomplete_feedback_is_rejected_with_safe_reason_without_retry(
+    finish_reason, tool_calls, expected_reason, expected_calls
+):
+    requests = []
+    history = AsyncMock(return_value=(_history_hit(),))
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        assert len(requests) <= 2
+        response = (
+            _tool_response("search_history", json.dumps({"query": QUERY}))
+            if len(requests) == 1
+            else _final_response(
+                finish_reason=finish_reason,
+                tool_calls=tool_calls,
+                content="PRIVATE_INCOMPLETE_FEEDBACK",
+            )
+        )
+        return httpx.Response(200, json=response)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(
+            ValueError, match="did not finish after the tool result"
+        ) as raised:
+            await run_search_tool_step(
+                client,
+                base_url="https://model.invalid/v1",
+                api_key="test-key",
+                model_name="configured-model",
+                repository="encode/httpx",
+                question="Investigate cancellation",
+                response_language="en",
+                history_searcher=history,
+            )
+    message = str(raised.value)
+    assert f"finish_reason={expected_reason}" in message
+    assert f"unexpected_tool_calls={expected_calls}" in message
+    assert "PRIVATE_" not in message
+    assert len(requests) == 2
+    history.assert_awaited_once()
+    assert client.is_closed
+
+
+@pytest.mark.parametrize("content", [None, "", "   "])
+async def test_normal_finish_still_requires_nonempty_tool_feedback(content):
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        assert len(requests) <= 2
+        return httpx.Response(
+            200,
+            json=_tool_response("search_history", json.dumps({"query": QUERY}))
+            if len(requests) == 1
+            else _final_response(content=content),
+        )
+
+    history = AsyncMock(return_value=())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(ValueError, match="empty tool feedback"):
+            await run_search_tool_step(
+                client,
+                base_url="https://model.invalid/v1",
+                api_key="test-key",
+                model_name="configured-model",
+                repository="encode/httpx",
+                question="Investigate cancellation",
+                response_language="en",
+                history_searcher=history,
+            )
+    assert len(requests) == 2
+    history.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "failure_kind", ["cancelled", "upstream-timeout", "http-error"]
+)
+async def test_feedback_dependency_failures_keep_identity_and_close_client(
+    failure_kind,
+):
+    failure = {
+        "cancelled": asyncio.CancelledError("External cancellation"),
+        "upstream-timeout": httpx.ReadTimeout("Upstream deadline"),
+        "http-error": httpx.HTTPStatusError(
+            "Provider rejected feedback",
+            request=httpx.Request("POST", "https://model.invalid/v1/chat/completions"),
+            response=httpx.Response(503),
+        ),
+    }[failure_kind]
+    requests = []
+    history = AsyncMock(return_value=(_history_hit(),))
+
+    async def handle(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(
+                200, json=_tool_response("search_history", json.dumps({"query": QUERY}))
+            )
+        raise failure
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(type(failure)) as raised:
+            await run_search_tool_step(
+                client,
+                base_url="https://model.invalid/v1",
+                api_key="test-key",
+                model_name="configured-model",
+                repository="encode/httpx",
+                question="Investigate cancellation",
+                response_language="en",
+                history_searcher=history,
+            )
+    assert raised.value is failure
+    assert len(requests) == 2
+    history.assert_awaited_once()
+    assert client.is_closed
 
 
 async def test_unauthorized_tool_is_rejected_before_execution() -> None:

@@ -111,7 +111,7 @@ class _BudgetExceeded(RuntimeError):
 class _Budget:
     counts: Counter = field(default_factory=Counter)
     limits: dict = field(
-        default_factory=lambda: {"github": 8, "embedding": 6, "llm": 7}
+        default_factory=lambda: {"github": 8, "embedding": 6, "llm": 10}
     )
     statuses: dict = field(default_factory=dict)
     finish_reasons: list = field(default_factory=list)
@@ -529,7 +529,6 @@ def _fake_settings(settings):
     return Settings(
         _env_file=None,
         database_url=settings.database_url,
-        redis_url="redis://127.0.0.1:6379/0",
         rabbitmq_url=settings.rabbitmq_url,
         llm_base_url="https://chat.example/v1",
         llm_model_name="e2e-analysis",
@@ -1036,7 +1035,7 @@ async def test_paid_source_history_post_outbox_worker_smoke(monkeypatch):
             assert 1 <= data["result"]["search_round"] <= 3
             assert budget.counts["github"] == 8
             assert 4 <= budget.counts["embedding"] <= 6
-            assert 1 <= budget.counts["llm"] <= 7
+            assert 1 <= budget.counts["llm"] <= 10
             assert "stop" in budget.finish_reasons
             assert all(
                 reason in ("stop", "tool_calls") for reason in budget.finish_reasons
@@ -1388,7 +1387,7 @@ class _AutomaticBudget(_Budget):
     """Hard paid-smoke caps for the actual automatic small-repository path."""
 
     limits: dict = field(
-        default_factory=lambda: {"github": 30, "embedding": 12, "llm": 7}
+        default_factory=lambda: {"github": 30, "embedding": 12, "llm": 10}
     )
     branch: str | None = None
     tree: str | None = None

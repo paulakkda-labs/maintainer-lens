@@ -84,7 +84,6 @@ jobs:
     # Secrets or production databases are used by integration tests.
     env:
       DATABASE_URL: postgresql+asyncpg://ci:ci_postgres_password@127.0.0.1:5432/maintainer_lens_ci
-      REDIS_URL: redis://127.0.0.1:6379/0
       RABBITMQ_URL: amqp://ci:ci_rabbitmq_password@127.0.0.1:5672/maintainer_lens_ci
       RUN_POSTGRES_INTEGRATION: "1"
       RUN_RABBITMQ_INTEGRATION: "1"
@@ -101,16 +100,6 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U ci -d maintainer_lens_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
-      redis:
-        image: redis:7.4-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping | grep -q PONG"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
