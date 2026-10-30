@@ -1,169 +1,130 @@
-# Web interface
+# Using MaintainerLens
 
-V1 has two same-origin pages: `/` for public GitHub Issue investigation and
-`/logs` for read-only task/event lookup. Swagger remains at `/docs`. React,
-TypeScript and Vite build static assets served by the existing FastAPI process.
-Docker uses Node only during the build; no extra frontend runtime service or
-provider credentials in the browser are required.
+[Documentation](README.md) · [Installation](INSTALLATION.md) · [Configuration](CONFIGURATION.md)
 
-## Upgrade and run
+## Investigate an Issue
 
-Alembic revision `3cd7a9b1e528` follows `1bc6f8a0d417`. It adds
-`investigation_tasks.response_language` with an `en/zh` constraint. Existing
-production tasks retain Chinese; new database INSERTs and public submissions
-default to English. Report/Run/checkpoint JSON and historical Chinese URL reuse
-hashes are preserved. Downgrade refuses while non-Chinese tasks exist.
+Open `http://127.0.0.1:8000/` after starting the stack. Paste a public URL such as
+`https://github.com/pypa/sampleproject/issues/225`, choose a preparation budget,
+and submit. The backend selects/prepares knowledge; you do not need a Source UUID.
 
-Stop old applications, apply the migration manually, and run the tests below.
-PostgreSQL, Redis and RabbitMQ remain available:
+The workspace shows Task ID, repository/Issue, language, current state and recorded
+execution phases. It polls committed detail/events approximately every two seconds
+while active. Progress is a sequence of recorded stages, not an estimated percentage
+or a separate completed event for every upstream HTTP request.
 
-```bash
-docker compose stop api dispatcher worker
-uv run --locked alembic upgrade head
+| Displayed outcome | What to do |
+| --- | --- |
+| Pending/running | Keep the page open or return later using the Task ID |
+| Completed report | Read the preview, inspect evidence, copy or download Markdown |
+| More evidence needed | Read the completed preliminary analysis and its explicit gaps |
+| Waiting for review | Inspect the reason and available explicit decisions |
+| Failed | Read the safe error and use execution records for investigation |
 
-# After test acceptance; export any useful old logs before recreation.
-docker compose build api
-docker compose up -d --no-deps --force-recreate api dispatcher worker
-```
+Navigating away does not cancel server work. GET polling failures display read
+uncertainty and retry reads; they do not automatically repeat submissions.
 
-Services share the application image. A restart alone does not install this
-code/protocol. Open [investigation](http://127.0.0.1:8000/) or
-[execution records](http://127.0.0.1:8000/logs). No `.env` change or manual Source
-UUID is needed. Start with a small repository and explicitly select Small in
-Preparation budget. A new investigation can incur embedding/model charges;
-read-only record lookup does not.
+## Languages and reports
 
-## Language, progress and reports
+The first visit is English. The EN/中文 switch remembers browser preference and
+translates interface labels, recorded phases and safe error messages. Submission
+snapshots `response_language` for the task. Original source/comment text and server
+technical logs are not automatically translated.
 
-- The first visit is English. The top-right switch locally translates labels,
-  recorded phases and safe errors, remembering the browser preference.
-- Submission snapshots `response_language: "en"` or `"zh"` through Task,
-  Outbox, Dispatcher, MQ, Worker, frozen execution and review recovery. Server
-  technical diagnostics stay English; original evidence/code is preserved.
-- Changing UI language does not mutate a task, translate its saved report or
-  automatically call the model. An explicit alternate-language report action
-  submits/resolves the selected language's investigation.
-- Languages have separate task/reuse identities but share compatible prepared
-  Source/History knowledge. Checkpoint recovery keeps the original language.
-- Old queue messages which omit language retain the legacy Chinese meaning.
-  New English messages include it. API clients needing Chinese should explicitly
-  submit the field now that the public default is English:
+Changing the UI language does not rewrite a saved report or call a model.
+An explicit alternate-language report action submits/resolves an investigation
+in that language. Language-specific tasks can share compatible prepared knowledge.
 
-```json
-{
-  "issue_url": "https://github.com/pypa/sampleproject/issues/225",
-  "response_language": "zh",
-  "knowledge_budget_profile": "small"
-}
-```
+Reports default to preview. Raw Markdown, copy and `.md` download are available.
+The report separates findings, hypotheses, unanswered questions, actual analysis
+excerpts and execution notes. Source links identify an immutable commit/file/line
+range; history links refer to GitHub objects. Citations are not proof of a root cause.
 
-The workspace shows Task ID, status, generation and report language. Standard
-remains the preparation default; Unlimited only releases preparation task
-limits while retaining existing Graph controls. Preparation may reuse an index.
+`needs_more_evidence` is a legitimate succeeded investigation. The model may need
+more evidence than the bounded index/context provides. V1 does not run repository
+tests or apply a patch to confirm a suggested fix.
 
-Detail/events are polled approximately every two seconds while active, with
-incremental event IDs. These are recorded phases, not an estimated percentage
-or a separate completion event for each HTTP call. Failed reads retry GETs and
-show uncertainty; they neither mark a task failed nor repeat POSTs. Navigating
-away does not cancel server work. Existing claims/leases/retries remain owners.
+## Repeated URLs and freshness
 
-Reports default to preview with tables, code and evidence links; raw Markdown,
-copy and `.md` download are available. `react-markdown` rendering excludes raw
-HTML, remote images and unsafe link protocols. The Web shell has a same-origin
-content policy. These protections do not certify the report's claims.
+Repeated submission can resolve active work, reuse a saved report, start an updated
+investigation, or recover an eligible failed task. Identity includes language,
+preparation budget and execution configuration; the same URL does not always mean
+the same Task.
 
-Long reports scroll inside a bounded report pane in both preview and raw modes.
-The height limit follows the viewport height with a small extension below it,
-rather than a fixed pixel cap, so larger windows have more room for reading.
-Wheel gestures outside the pane scroll the page. Inside the pane, reaching the
-top or bottom does not pass scrolling to the page. The pane can receive keyboard
-focus for scrolling; short reports retain their natural height.
+A saved-report check observes GitHub metadata for up to 15 seconds: Issue title,
+body, state, update time and the default-branch commit. A change can queue new work
+while keeping the previous report. A failed check can return the old report with
+latest status marked unknown. The check does not cover all linked/unlinked PRs,
+comments or discussions. An earlier displayed report identifies its owning Task.
 
-`needs_more_evidence` is a valid completed report. An earlier report displayed
-while new work is pending identifies its owning Task. Freshness describes the
-existing scoped metadata check, not exhaustive PR/discussion coverage.
+Closed Issue state is displayed with priority; whether a code fix exists and
+which revision it applies to remain evidence questions. An eligible failed Task
+can have at most three user-triggered recoveries, retaining compatible checkpoint
+progress. Permanent failures are not automatically resumed.
 
-Waiting reviews expose backend-eligible budget increases, acceptance of an
-available validated stage analysis, or rejection. Approval is explicit; retries
-of the same action/budget reuse the decision's idempotency ID.
-Stage acceptance first exposes the complete saved analysis and actual evidence
-context so the operator can inspect the artifact before deciding.
+## Human review
 
-## Records and retained state
+Normal reports do not require approval. Review can pause a task when Source
+preparation exceeds a supported limit or its deadline, or when analysis output
+is truncated by its output allowance.
 
-Records accepts a Task ID or Issue URL. URL search uses GET lookup; task selection
-uses existing detail/events GETs. It displays safe persisted events/errors, not
-Docker files. See [developer troubleshooting](TROUBLESHOOTING.md) for technical logs.
+| Decision | Boundary |
+| --- | --- |
+| Increase budget and continue | Select an eligible preparation profile or finite output allowance; no silent Unlimited approval |
+| Accept complete stage analysis | Available only if a complete, structurally/reference-valid earlier analysis exists; later unfinished work remains disclosed |
+| Reject and finish | Ends this review path without presenting incomplete JSON as a report |
 
-The two workspaces retain independent state across navigation and back/forward.
-Refresh restores Task references and reads existing reports via GET without
-submission. Session storage holds URL/IDs/profile; local storage holds language.
-PostgreSQL remains authoritative for reports. Disabled storage retains only the
-current in-memory workspace; closed/cleared sessions have no guaranteed history.
-There is no account history, authentication or user isolation. This remains a
-localhost development deployment rather than a hardened public hosting service.
+The interface exposes only eligible actions and lets you inspect an available
+stage analysis and its evidence before accepting it. Budget approval is limited
+to three continuations per Task, separate from the three failed-task user recoveries.
+Waiting does not expire automatically. Repeating the URL only displays waiting;
+it does not approve the request. Duplicate decisions use idempotency protection.
 
-## Development and acceptance
+## Execution records and retained workspaces
 
-Docker users need no host Node. Source development uses Node 22.12+:
+Open `/logs` and enter a Task ID or Issue URL. URL lookup is read-only and lists
+existing tasks; it does not prepare knowledge, contact GitHub or call a model.
+Select a task to see saved phases, generations and safe errors. Technical Docker
+logs are a separate developer view: [troubleshooting](TROUBLESHOOTING.md).
+
+Investigation and records have independent retained state across navigation.
+Refresh restores task references and fetches saved results with GET rather than
+submitting again. Session storage keeps references/profile and local storage keeps
+language; PostgreSQL owns the report. Clearing/closing browser sessions can lose
+local references. There is no account-based history or conversational memory.
+
+## HTTP API
+
+Swagger is at `/docs` and the schema is at `/openapi.json`. API clients should
+send the desired language explicitly; the public default is English.
 
 ```bash
-cd web
-npm ci --ignore-scripts --no-audit --no-fund
-npm run dev
+curl -X POST http://127.0.0.1:8000/investigations/from-url \
+  -H 'Content-Type: application/json' \
+  -d '{"issue_url":"https://github.com/pypa/sampleproject/issues/225","response_language":"en","knowledge_budget_profile":"small"}'
 ```
 
-Vite proxies APIs to `http://127.0.0.1:8000`. For a source Python deployment, first
-run `npm run build`, return to the repository root, then start FastAPI using
-existing configuration. FastAPI serves `WORKDIR/web/dist`; start it after
-building. Python wheels alone do not bundle this separate frontend build.
-Without built assets, Web entries return 503 while API/Swagger remain available.
-
-Offline browser tests intercept investigation APIs, without real providers,
-GitHub, databases or RabbitMQ:
+Copy the returned Task ID, then read without creating more work:
 
 ```bash
-cd web
-npm run format:check
-npm run build
-PLAYWRIGHT_BROWSERS_PATH=../.local/playwright-browsers npm exec -- playwright install chromium
-PLAYWRIGHT_BROWSERS_PATH=../.local/playwright-browsers npm test
+INVESTIGATION_TASK_ID='paste-returned-task-id'
+curl "http://127.0.0.1:8000/investigations/$INVESTIGATION_TASK_ID"
+curl "http://127.0.0.1:8000/investigations/$INVESTIGATION_TASK_ID/events?after=0&limit=100"
 ```
 
-They cover languages, live phases/errors, preview/download safety, retained
-navigation/refresh, lookup and explicit idempotent review. Mock screenshots are
-saved under ignored `.local/web-review`; they are not real-provider acceptance.
-CI adds a separate locked Web build/browser job.
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /investigations/from-url` | Resolve/create work with automatic knowledge preparation; may incur charges |
+| `GET /investigations/{task_id}` | Task, Issue snapshot, progress/errors and available result/`report_markdown` |
+| `GET /investigations/{task_id}/events` | Paginated committed events; continue with `next_after` |
+| `GET /investigations/lookup?issue_url=...` | Read-only URL task history; no freshness or provider call |
+| `GET /investigations/budget-profiles` | Available knowledge-preparation profiles |
+| `GET /investigations/{task_id}/reviews` | Review requests and eligible decisions |
+| `POST /investigations/{task_id}/reviews/{review_id}/decision` | Explicit validated decision; use the Swagger request contract |
 
-The maintainer runs pytest. Focused offline regression:
+The detail's `result` and `report_markdown` are available only after success;
+legacy snapshot-only tasks may legitimately have no report. Preview is rendered
+from stored validated analysis, so reading an existing report is not another LLM
+request. The Web renderer excludes raw HTML, remote images and unsafe links.
 
-```bash
-uv run --locked pytest -q \
-  tests/test_investigation_web_contracts.py \
-  tests/test_investigation_contracts.py \
-  tests/api/test_investigations.py \
-  tests/test_investigation_progress_contracts.py \
-  tests/test_investigation_url_resolution.py \
-  tests/test_investigation_human_review.py \
-  tests/test_worker_production_wiring.py \
-  tests/messaging/test_publisher.py \
-  tests/integration/test_investigation_processor_pipeline.py \
-  tests/integration/test_investigation_result_persistence.py \
-  tests/integration/test_investigation_result_readback.py
-```
-
-Keep application processes stopped for the existing integration suites, which
-include transactional Outbox fixtures. Existing migrations must be applied:
-
-```bash
-RUN_POSTGRES_INTEGRATION=1 uv run --locked pytest -q \
-  tests/integration/test_investigation_url_reuse_postgres.py \
-  tests/integration/test_investigation_result_persistence.py \
-  tests/integration/test_investigation_result_readback.py \
-  tests/integration/test_investigation_processor_pipeline.py \
-  tests/integration/test_investigation_human_review_postgres.py
-```
-
-Before merging, run default full regression and observe GitHub CI. New offline
-Web tests require no paid calls. Manual deployed Issue trials are a separate,
-potentially paid acceptance step.
+For API contracts and readback boundaries, see [architecture](ARCHITECTURE.md).

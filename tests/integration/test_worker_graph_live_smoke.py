@@ -84,7 +84,7 @@ class _RequestBudget:
     finish_reason: str | None = None
 
     def charge(self, stage: str) -> None:
-        limits = {"github": 4, "embedding": 4, "llm": 7}
+        limits = {"github": 4, "embedding": 4, "llm": 10}
         if self.counts[stage] >= limits[stage]:
             raise _BudgetExceeded(f"Live smoke {stage} request limit reached")
         self.counts[stage] += 1
@@ -530,7 +530,7 @@ async def test_live_history_worker_commits_real_result_before_ack(monkeypatch):
             result = await _assert_readback(factory, owned)
             assert budget.counts["github"] == 4
             assert 2 <= budget.counts["embedding"] <= 4
-            assert 1 <= budget.counts["llm"] <= 7
+            assert 1 <= budget.counts["llm"] <= 10
             assert budget.finish_reason in ("stop", "tool_calls")
             print(
                 {
@@ -555,7 +555,7 @@ async def test_request_guards_enforce_paid_call_caps_without_network():
     chat = httpx.Request(
         "POST", "https://chat.example/v1/chat/completions", json={"max_tokens": 4096}
     )
-    for _ in range(7):
+    for _ in range(10):
         await budget.llm(chat)
     with pytest.raises(_BudgetExceeded):
         await budget.llm(chat)
@@ -564,7 +564,7 @@ async def test_request_guards_enforce_paid_call_caps_without_network():
         await budget.github(github)
     with pytest.raises(_BudgetExceeded):
         await budget.github(github)
-    assert budget.counts == Counter(github=4, embedding=4, llm=7)
+    assert budget.counts == Counter(github=4, embedding=4, llm=10)
 
 
 @pytest.mark.parametrize(

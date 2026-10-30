@@ -46,7 +46,6 @@ def test_settings_loads_github_token(
     settings = Settings(
         _env_file=None,
         database_url="postgresql+asyncpg://test:pass@localhost/test",
-        redis_url="redis://localhost/0",
         rabbitmq_url="amqp://guest:guest@localhost/vhost",
     )
 

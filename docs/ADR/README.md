@@ -1,35 +1,25 @@
 # Architecture Decision Records
 
-Architecture Decision Records (ADRs) are **public project documents intended for version control**. They explain the context, selected architecture and consequences of important decisions. Commit them to GitHub as part of normal reviewed PRs. Keep local progress notes and private experiments under ignored `.local/`, not here.
+[Documentation](../README.md) · [Current architecture](../ARCHITECTURE.md)
 
-The initial records were documented on 2026-10-27 from established project decisions. Their filenames retain that documentation date. They are accepted, version-controlled design records; current module responsibilities and integration boundaries are described in the [architecture](../ARCHITECTURE.md).
+These public records explain important architectural choices, their context
+and consequences. They belong in version control. Current operating instructions
+live in the other guides; task diaries and individual acceptance sessions do not
+belong here.
 
-Keep context, decisions and consequences here. Development branch names, test-session logs, teaching notes and per-task implementation plans belong in local development notes. If a future change replaces an accepted decision, add a superseding record and link it rather than silently rewriting its rationale.
-
-| Record | Status | Summary |
+| Record | Status | Decision |
 | --- | --- | --- |
-| [2026-10-27-reliable-outbox-and-rabbitmq.md](2026-10-27-reliable-outbox-and-rabbitmq.md) | Accepted (historical) | Transactional Outbox + RabbitMQ + at-least-once messaging |
-| [2026-10-27-investigation-lease-fencing.md](2026-10-27-investigation-lease-fencing.md) | Accepted (historical) | Atomic database claims, claim tokens, expiring leases and guarded writes |
-| [2026-10-27-versioned-source-and-history-rag.md](2026-10-27-versioned-source-and-history-rag.md) | Accepted (historical) | Commit-pinned source and separate history retrieval; exact pgvector, selected hybrid |
-| [2026-10-27-bounded-modular-agent.md](2026-10-27-bounded-modular-agent.md) | Accepted | Modular bounded LangGraph, application execution boundary and durable preliminary results |
-| [2026-10-28-source-selection-and-derived-reports.md](2026-10-28-source-selection-and-derived-reports.md) | Accepted | Explicit Source identity across delivery/storage, bounded Worker tools and derived reports |
-| [2026-10-28-automatic-investigation-preparation.md](2026-10-28-automatic-investigation-preparation.md) | Accepted | URL intake, persisted preparation budgets, complete Source reuse/build and fenced prepared identity |
+| [Reliable Outbox and RabbitMQ](2026-10-27-reliable-outbox-and-rabbitmq.md) | Accepted | Atomic submission and confirmed at-least-once delivery |
+| [Investigation lease fencing](2026-10-27-investigation-lease-fencing.md) | Accepted | Claims, renewable leases and stale-worker write protection |
+| [Versioned Source and History RAG](2026-10-27-versioned-source-and-history-rag.md) | Accepted | Commit-pinned source and separately scoped historical retrieval |
+| [Bounded modular agent](2026-10-27-bounded-modular-agent.md) | Accepted | Focused Graph composition and bounded execution |
+| [Source selection and derived reports](2026-10-28-source-selection-and-derived-reports.md) | Accepted | Trusted index identity and reports derived from validated results |
+| [Automatic investigation preparation](2026-10-28-automatic-investigation-preparation.md) | Accepted | URL intake, persisted budgets and compatible knowledge reuse/build |
+| [Claim-fenced Graph checkpoints](2026-10-29-claim-fenced-graph-checkpoints.md) | Accepted | Frozen execution and durable progress under task ownership |
+| [URL resolution and delivery generations](2026-10-29-url-resolution-and-delivery-generations.md) | Accepted | Freshness, arbitration and controlled user recovery |
+| [On-demand investigation review](2026-10-29-on-demand-investigation-review.md) | Accepted | Lease-free waiting and explicit, idempotent human decisions |
 
-| [2026-10-29-claim-fenced-graph-checkpoints.md](2026-10-29-claim-fenced-graph-checkpoints.md) | Accepted | Task-linked frozen execution, async SQLAlchemy Saver and claim-fenced recovery |
-
-| [2026-10-29-url-resolution-and-delivery-generations.md](2026-10-29-url-resolution-and-delivery-generations.md) | Accepted | URL arbitration, scoped freshness, generation-fenced user recovery and progress/error readback |
-
-| [2026-10-29-on-demand-investigation-review.md](2026-10-29-on-demand-investigation-review.md) | Accepted; merged in #17 | Soft-budget review, lease-free waiting and idempotent approved resume |
-
-The Worker supports automatic preparation, explicit knowledge selection and
-checkpoint recovery. M4 is merged through PR #14 and checkpoint recovery through
-PR #15 with maintainer-confirmed tests. The maintainer reports URL reuse/progress local tests passed and services started;
-Git contains squash merges #16 and #17. Human-review local tests and service
-restart were confirmed by the maintainer; CI was not independently inspected.
-The original Runner, task status, claim fencing and ACK semantics remain
-authoritative. Combined recovery/review/report closure acceptance passed per
-maintainer feedback and is merged in PR #18. New M6 report-quality and deployed
-HTTP acceptance have maintainer-confirmed offline and single cached-case checks;
-remaining cases and final human review are pending. Curated project memory and conversational follow-up are
-deferred, rather than prerequisites for M5 completion. Private access remains
-future work.
+Filenames retain their documentation dates. Keep the original rationale when
+behavior evolves: a replacing decision should add a superseding record and link
+it, rather than rewriting historical reasoning. An accepted decision is not proof
+that every possible deployment or provider has been validated.

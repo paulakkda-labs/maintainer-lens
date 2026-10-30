@@ -71,6 +71,8 @@ validated analysis/context without an extra LLM request.
 - Automatic cold-start tests must exercise the actual builder/Worker. Paid tests
   are independently opt-in, limited to a small public repository with hard request
   and input caps. Supplying tests does not establish they passed or prove model
-  conclusions. The maintainer confirmed the bounded automatic cold-start smoke
-  passed on 2026-10-29; M4 still needs report review and reviewed green CI/merge.
-- Checkpoint recovery/HITL/memory remain M5; a product Web UI remains M6.
+  conclusions. See [evaluation](../REPORT_QUALITY.md) and
+  [testing](../DEVELOPMENT.md) for current verification boundaries.
+- Checkpoint recovery, human review and the Web UI have separate architectural
+  responsibilities; this preparation boundary does not own them. See the
+  [current architecture](../ARCHITECTURE.md).

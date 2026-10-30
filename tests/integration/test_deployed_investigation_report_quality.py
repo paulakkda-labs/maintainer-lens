@@ -35,6 +35,11 @@ from maintainer_lens.services.investigation_report import render_investigation_r
 
 ROOT = Path(__file__).resolve().parents[2]
 DATASET = load_report_review_dataset(ROOT / "tests/fixtures/reports/sampleproject.json")
+GROUNDING_DATASET = load_report_review_dataset(
+    ROOT / "tests/fixtures/reports/grounding_regressions.json"
+)
+REVIEW_CASES = [*DATASET.cases, *GROUNDING_DATASET.cases]
+GROUNDING_CASE_IDS = {case.id for case in GROUNDING_DATASET.cases}
 pytestmark = pytest.mark.anyio
 
 
@@ -64,9 +69,16 @@ def _local_base_url(raw):
 
 
 async def _exercise_api(
-    client, case: ReportReviewCase, trace, *, timeout_seconds=600.0, poll_interval=1.0
+    client,
+    case: ReportReviewCase,
+    trace,
+    *,
+    timeout_seconds=600.0,
+    poll_interval=1.0,
+    knowledge_budget_profile="small",
 ):
     """Exercise the deployed public protocol; never create internal test rows."""
+    budget = make_knowledge_preparation_budget(knowledge_budget_profile)
     started = time.monotonic()
 
     async def request(method, path, *, response_model=None, **kwargs):
@@ -88,7 +100,10 @@ async def _exercise_api(
 
     async with asyncio.timeout(timeout_seconds):
         assert await request("GET", "/health/live") == {"status": "ok"}
-        submission = {"issue_url": case.issue_url, "knowledge_budget_profile": "small"}
+        submission = {
+            "issue_url": case.issue_url,
+            "knowledge_budget_profile": budget.profile,
+        }
         initial = await request(
             "POST",
             "/investigations/from-url",
@@ -117,6 +132,7 @@ async def _exercise_api(
                 case.repository,
                 case.issue_number,
             )
+            assert detail.knowledge_budget == budget
             if detail.status == "succeeded":
                 break
             assert detail.result is None and detail.report_markdown is None
@@ -214,12 +230,12 @@ def _save_artifacts(folder, case, trace, detail=None):
         (folder / "report.md").write_text(detail.report_markdown, encoding="utf-8")
 
 
-@pytest.mark.parametrize("case", DATASET.cases, ids=lambda case: case.id)
+@pytest.mark.parametrize("case", REVIEW_CASES, ids=lambda case: case.id)
 async def test_deployed_url_to_report_quality(case):
     if os.getenv("RUN_DEPLOYED_REPORT_QUALITY") != "1":
         pytest.skip("HTTP deployment acceptance is disabled; may incur provider costs")
     selected = set(os.getenv("REPORT_QUALITY_CASES", "license-metadata").split(","))
-    assert selected <= {item.id for item in DATASET.cases}, (
+    assert selected <= {item.id for item in REVIEW_CASES}, (
         "Unknown REPORT_QUALITY_CASES ID"
     )
     if case.id not in selected:
@@ -230,7 +246,12 @@ async def test_deployed_url_to_report_quality(case):
     folder = ROOT / ".local/report-quality" / uuid4().hex / case.id
     trace = {
         "case": case.model_dump(mode="json"),
-        "dataset_observed_on": DATASET.observed_on.isoformat(),
+        "dataset_observed_on": (
+            GROUNDING_DATASET if case.id in GROUNDING_CASE_IDS else DATASET
+        ).observed_on.isoformat(),
+        "knowledge_budget_profile": "standard"
+        if case.id in GROUNDING_CASE_IDS
+        else "small",
         "started_at": datetime.now(UTC).isoformat(),
         "api_origin": base,
         "semantic_review": "pending",
@@ -240,7 +261,12 @@ async def test_deployed_url_to_report_quality(case):
         async with httpx.AsyncClient(
             base_url=base, timeout=20.0, follow_redirects=False, trust_env=False
         ) as client:
-            detail = await _exercise_api(client, case, trace)
+            detail = await _exercise_api(
+                client,
+                case,
+                trace,
+                knowledge_budget_profile=trace["knowledge_budget_profile"],
+            )
     except BaseException as error:
         trace["error_type"] = type(error).__name__
         raise
@@ -260,7 +286,7 @@ async def test_deployed_url_to_report_quality(case):
         )
 
 
-def _fake_detail(case, *, status="succeeded", code=None):
+def _fake_detail(case, *, status="succeeded", code=None, profile="small"):
     index = "3b111111-1111-4111-8111-111111111111"
     result = InvestigationResult(
         repository=case.repository,
@@ -288,7 +314,7 @@ def _fake_detail(case, *, status="succeeded", code=None):
         "issue_number": case.issue_number,
         "auto_prepare_knowledge": True,
         "prepared_source_index_id": index,
-        "knowledge_budget": make_knowledge_preparation_budget("small").model_dump(
+        "knowledge_budget": make_knowledge_preparation_budget(profile).model_dump(
             mode="json"
         ),
         "status": status,
@@ -388,22 +414,25 @@ async def test_http_protocol_stops_on_safe_failure_or_review_without_deciding(st
 
 
 @pytest.mark.parametrize(
-    "change",
+    ("change", "profile"),
     [
-        "normal",
-        "early-report",
-        "unknown-freshness",
-        "different-task",
-        "invalid-progress-time",
-        "invalid-event-id",
-        "invalid-event-time",
-        "invalid-freshness-time",
+        ("normal", "small"),
+        ("normal", "standard"),
+        ("early-report", "small"),
+        ("unknown-freshness", "small"),
+        ("different-task", "small"),
+        ("invalid-progress-time", "small"),
+        ("invalid-event-id", "small"),
+        ("invalid-event-time", "small"),
+        ("invalid-freshness-time", "small"),
     ],
 )
-async def test_http_protocol_polls_real_shapes_and_distinguishes_reuse_failures(change):
+async def test_http_protocol_polls_real_shapes_and_distinguishes_reuse_failures(
+    change, profile
+):
     case = DATASET.cases[0]
     posts, reads = 0, 0
-    saved = _fake_detail(case)
+    saved = _fake_detail(case, profile=profile)
     if change == "invalid-progress-time":
         saved["progress"]["created_at"] = "not-a-timestamp"
     if change == "invalid-event-id":
@@ -414,6 +443,7 @@ async def test_http_protocol_polls_real_shapes_and_distinguishes_reuse_failures(
         if request.url.path == "/health/live":
             payload = {"status": "ok"}
         elif request.method == "POST":
+            assert json.loads(request.content)["knowledge_budget_profile"] == profile
             posts += 1
             if posts < 3:
                 payload = _resolution(
@@ -439,7 +469,11 @@ async def test_http_protocol_polls_real_shapes_and_distinguishes_reuse_failures(
             payload = {"events": [event], "next_after": None}
         else:
             reads += 1
-            payload = saved if reads > 1 else _fake_detail(case, status="running")
+            payload = (
+                saved
+                if reads > 1
+                else _fake_detail(case, status="running", profile=profile)
+            )
             if change == "early-report" and reads == 1:
                 payload["report_markdown"] = "Premature report."
         return httpx.Response(200, json=payload)
@@ -449,7 +483,9 @@ async def test_http_protocol_polls_real_shapes_and_distinguishes_reuse_failures(
     ) as client:
         trace = {}
         if change == "normal":
-            detail = await _exercise_api(client, case, trace, poll_interval=0)
+            detail = await _exercise_api(
+                client, case, trace, poll_interval=0, knowledge_budget_profile=profile
+            )
             assert detail.result.next_step == "needs_more_evidence"
             assert trace["observations"]["finding_count"] == 0
             assert trace["semantic_review"] == "pending" and posts == 3
@@ -466,6 +502,22 @@ async def test_http_protocol_polls_real_shapes_and_distinguishes_reuse_failures(
             )
             with pytest.raises(expected):
                 await _exercise_api(client, case, trace, poll_interval=0)
+
+
+async def test_http_protocol_rejects_invalid_budget_before_network_requests():
+    def transport(request):
+        pytest.fail("Invalid budget must fail before any HTTP request")
+
+    async with httpx.AsyncClient(
+        base_url="http://localhost", transport=httpx.MockTransport(transport)
+    ) as client:
+        with pytest.raises(ValueError, match="Unsupported knowledge budget profile"):
+            await _exercise_api(
+                client,
+                GROUNDING_DATASET.cases[0],
+                {},
+                knowledge_budget_profile="invalid",
+            )
 
 
 async def test_http_wait_deadline_does_not_cancel_or_delete_server_task():

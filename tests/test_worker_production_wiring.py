@@ -53,7 +53,6 @@ def anyio_backend() -> str:
 def _settings(**changes) -> Settings:
     values = {
         "database_url": "postgresql+asyncpg://worker:unused@127.0.0.1/unused",
-        "redis_url": "redis://127.0.0.1:6379/0",
         "rabbitmq_url": "amqp://worker:unused@127.0.0.1/unused",
         "github_token": "github-test-token",
         "llm_base_url": "https://chat.example/v1",

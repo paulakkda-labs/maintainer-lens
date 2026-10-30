@@ -6,8 +6,8 @@ guide describes the local Compose deployment, without a centralized log service,
 distributed tracing or a demonstrated availability SLA.
 
 The [Web interface](WEB_INTERFACE.md) presents safe task/event records at `/logs`.
-Its language extension has a separate migration; this logging slice did not add
-a table or migration.
+For startup, migration and connection settings, use [installation](INSTALLATION.md)
+and [configuration](CONFIGURATION.md).
 
 ## Locate an investigation by Issue URL
 
@@ -45,7 +45,7 @@ deployment suitable for public exposure.
 Copy a `task_id` from lookup, then use the existing read endpoints:
 
 ```bash
-INVESTIGATION_TASK_ID='e4bcfccc-c4c1-4dce-a3a2-6ece0b78d19d'
+INVESTIGATION_TASK_ID='paste-task-id-from-lookup'
 curl "http://127.0.0.1:8000/investigations/$INVESTIGATION_TASK_ID"
 curl --get "http://127.0.0.1:8000/investigations/$INVESTIGATION_TASK_ID/events" \
   --data-urlencode 'after=0' --data-urlencode 'limit=100'
@@ -107,7 +107,8 @@ allowlisted analysis field paths and error types, for example:
 Unknown field names are replaced with `<field>` so dynamic input keys are not
 logged. Other error text remains in the existing safe API error codes. An empty
 `findings` list can be valid; an individual finding with no reference is invalid.
-Diagnostics do not repair model output or trigger extra provider calls.
+Logging itself does not repair model output or trigger provider calls; the
+analysis adapter's one schema-correction allowance is a separate execution rule.
 Ordinary diagnostic formatting/sink errors are contained in the logging helper
 so they cannot replace a business error or change task status. No raw-text
 fallback is emitted.
@@ -143,9 +144,9 @@ Use another filename when keeping multiple exports. Restrict access and inspect
 the export before sharing it. DB events/checkpoints follow their existing
 persistent storage and deletion rules; this change adds no cleanup/TTL or backup.
 
-There is no Alembic migration or `.env` change for this troubleshooting slice.
-Apply the code and new container logging options by rebuilding/recreating the
-applications; a plain restart does not install them:
+Apply changed code or container logging options by rebuilding/recreating the
+applications; a plain restart does not install them. For schema changes, follow
+the migration step in the [upgrade procedure](INSTALLATION.md#upgrading-an-existing-installation).
 
 ```bash
 docker compose stop api dispatcher worker
@@ -184,4 +185,4 @@ RUN_POSTGRES_INTEGRATION=1 uv run --locked pytest -q \
 
 Broader existing PG/MQ suites retain their documented isolation requirements;
 the permission to keep services running above applies only to this lookup file.
-New tests being supplied is not a claim that they have been run or passed.
+For full-suite isolation and opt-in paid acceptance, see [development and tests](DEVELOPMENT.md).

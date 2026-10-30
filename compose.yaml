@@ -1,10 +1,9 @@
 name: maintainer-lens
 
 # Application connection strings use Docker service DNS names; host-mode
-# DATABASE_URL / REDIS_URL / RABBITMQ_URL in .env still use localhost.
+# DATABASE_URL / RABBITMQ_URL in .env still use localhost.
 x-app-env: &app-env
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
-  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
   RABBITMQ_URL: amqp://${RABBITMQ_USER:?RABBITMQ_USER is required}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/${RABBITMQ_VHOST:?RABBITMQ_VHOST is required}
 
 x-app-build: &app-build
@@ -54,37 +53,6 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
-
-  redis:
-    restart: unless-stopped
-    image: redis:7.4-alpine
-
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
-
-    command:
-      - redis-server
-      - --appendonly
-      - "yes"
-      - --requirepass
-      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
-
-    ports:
-      - "127.0.0.1:6379:6379"
-
-    volumes:
-      - redis_data:/data
-
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG",
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
 
   rabbitmq:
     restart: unless-stopped
@@ -136,8 +104,6 @@ services:
     depends_on: &app-dependencies
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
       migrate:
@@ -179,5 +145,4 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
   rabbitmq_data:

@@ -439,7 +439,6 @@ def test_compose_api_and_worker_compare_the_same_nonsecret_execution_identity():
         settings = Settings(
             _env_file=None,
             database_url="postgresql+asyncpg://test:test@localhost/test",
-            redis_url="redis://localhost/0",
             rabbitmq_url="amqp://test:test@localhost/",
             llm_api_key=None,
             embedding_api_key=None,
