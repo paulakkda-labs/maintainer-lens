@@ -570,6 +570,7 @@ async def test_decision_queries_never_autoflush_an_incomplete_decision_pair(
     context = _context(observed=21)
     task = InvestigationTask(
         id="review-autoflush-task",
+        response_language="en",
         repository="review-tests/repo",
         issue_number=123,
         status="waiting_review",

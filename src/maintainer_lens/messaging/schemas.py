@@ -4,6 +4,8 @@ from uuid import UUID
 from aio_pika.abc import AbstractIncomingMessage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from maintainer_lens.agents.investigation_analysis import ResponseLanguage
+
 RETRY_ATTEMPTS_HEADER = "ml-retry-attempts"
 
 MISSING_TASK_CHECKS_HEADER = "ml-missing-task-checks"
@@ -19,6 +21,10 @@ class InvestigationRequestedMessage(BaseModel):
     task_id: str = Field(min_length=1)
     repository: str = Field(min_length=1)
     issue_number: int = Field(gt=0, strict=True)
+    # Preserve legacy Chinese wire payloads; English intent must survive retries.
+    response_language: ResponseLanguage = Field(
+        default="zh", exclude_if=lambda value: value == "zh"
+    )
     source_index_id: UUID | None = None
     auto_prepare_knowledge: bool = Field(default=False, strict=True)
     generation: int = Field(

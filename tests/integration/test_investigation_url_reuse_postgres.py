@@ -131,6 +131,7 @@ def _observation(scope, *, commit=None, state="open"):
 
 
 async def _resolve(scope, observer=None, **kwargs):
+    kwargs.setdefault("response_language", "zh")
     return await resolve_investigation_url(
         scope.factory,
         repository=scope.repository,
@@ -141,13 +142,15 @@ async def _resolve(scope, observer=None, **kwargs):
     )
 
 
-async def _finish(scope, task_id, *, status="succeeded", retryable=False):
+async def _finish(
+    scope, task_id, *, status="succeeded", retryable=False, response_language="zh"
+):
     request = InvestigationInput(
         repository=scope.repository,
         issue_number=123,
         issue_title="Cleanup",
         issue_body="Release resources.",
-        response_language="zh",
+        response_language=response_language,
         source_index_id=scope.index_id,
     )
     url = f"https://github.com/{scope.repository}/issues/124"
@@ -228,8 +231,15 @@ async def _finish(scope, task_id, *, status="succeeded", retryable=False):
                 task_id=task_id,
                 storage_version=1,
                 request_payload=request.model_dump(mode="json"),
-                execution_payload=scope.config.model_dump(mode="json"),
-                fingerprint=execution_fingerprint(request, scope.config),
+                execution_payload=scope.config.model_copy(
+                    update={"response_language": response_language}
+                ).model_dump(mode="json"),
+                fingerprint=execution_fingerprint(
+                    request,
+                    scope.config.model_copy(
+                        update={"response_language": response_language}
+                    ),
+                ),
             )
         )
         if status == "succeeded":
@@ -591,16 +601,20 @@ async def test_postgres_progress_is_claim_fenced_and_rollback_does_not_publish_e
         assert [row.kind for row in rows] == ["queued"]
 
 
-async def test_postgres_lookup_rejects_foreign_intent_before_external_calls(scope):
+@pytest.mark.parametrize("language", ["en", "zh"])
+async def test_postgres_lookup_rejects_foreign_intent_before_external_calls(
+    scope, language
+):
     import maintainer_lens.services.investigation_url_reuse as module
 
-    original = await _resolve(scope)
+    original = await _resolve(scope, response_language=language)
     async with scope.factory() as session, session.begin():
         original_task = await session.get(InvestigationTask, original.task_id)
         other_id = str(uuid4())
         session.add(
             InvestigationTask(
                 id=other_id,
+                response_language=language,
                 repository=scope.repository,
                 issue_number=124,
                 auto_prepare_knowledge=True,
@@ -620,6 +634,7 @@ async def test_postgres_lookup_rejects_foreign_intent_before_external_calls(scop
             scope.factory,
             repository=scope.repository,
             issue_number=123,
+            response_language=language,
             observer=observer,
         )
     observer.assert_not_awaited()
@@ -693,3 +708,35 @@ async def test_postgres_get_does_not_claim_an_expired_check_is_still_running(sco
         assert (
             await session.get(InvestigationTask, original.task_id)
         ).freshness_payload["status"] == "checking"
+
+
+async def test_postgres_languages_isolate_tasks_and_reuse_same_language_reports(scope):
+    english = await _resolve(scope, response_language="en")
+    chinese = await _resolve(scope, response_language="zh")
+    assert english.task_id != chinese.task_id
+    await _finish(scope, english.task_id, response_language="en")
+    await _finish(scope, chinese.task_id, response_language="zh")
+    reused_en, reused_zh = await asyncio.gather(
+        _resolve(scope, response_language="en"), _resolve(scope, response_language="zh")
+    )
+    assert reused_en.decision == reused_zh.decision == "reused"
+    assert reused_en.report_task_id == english.task_id
+    assert reused_zh.report_task_id == chinese.task_id
+    assert reused_en.response_language == "en" and reused_zh.response_language == "zh"
+
+
+async def test_postgres_english_recovery_preserves_language_in_the_next_delivery(scope):
+    created = await _resolve(scope, response_language="en")
+    await _finish(
+        scope, created.task_id, status="failed", retryable=True, response_language="en"
+    )
+    resumed = await _resolve(scope, response_language="en")
+    assert resumed.decision == "resumed" and resumed.task_id == created.task_id
+    async with scope.factory() as session:
+        outbox = await session.scalar(
+            select(InvestigationOutboxEvent).where(
+                InvestigationOutboxEvent.task_id == created.task_id,
+                InvestigationOutboxEvent.generation == 1,
+            )
+        )
+        assert outbox.payload["response_language"] == "en"

@@ -121,22 +121,38 @@ async def result():
 
 
 @pytest.mark.parametrize("selected", [None, INDEX_ID])
+@pytest.mark.parametrize("response_language", [None, "zh"])
 async def test_submission_preserves_uuid_in_task_outbox_and_persistent_message(
     selected,
+    response_language,
 ):
     factory = _Factory()
+    language_options = (
+        {} if response_language is None else {"response_language": response_language}
+    )
+    expected_language = response_language or "en"
     message = await create_investigation_submission(
-        factory, repository="encode/httpx", issue_number=123, source_index_id=selected
+        factory,
+        repository="encode/httpx",
+        issue_number=123,
+        source_index_id=selected,
+        **language_options,
     )
     task, event = factory.rows
     assert isinstance(task, InvestigationTask) and isinstance(
         event, InvestigationOutboxEvent
     )
     assert task.source_index_id == message.source_index_id == selected
+    assert task.response_language == message.response_language == expected_language
     assert factory.committed and factory.active == 0
     assert event.payload == message.model_dump(mode="json")
+    assert ("response_language" in event.payload) is (expected_language == "en")
     published = create_investigation_message(
-        message.task_id, message.repository, message.issue_number, selected
+        message.task_id,
+        message.repository,
+        message.issue_number,
+        selected,
+        response_language=message.response_language,
     )
     assert InvestigationRequestedMessage.model_validate_json(published.body) == message
     exchange = SimpleNamespace(publish=AsyncMock())
@@ -148,8 +164,9 @@ async def test_submission_preserves_uuid_in_task_outbox_and_persistent_message(
 
 
 @pytest.mark.parametrize("selected", [None, str(INDEX_ID)])
+@pytest.mark.parametrize("response_language", [None, "zh"])
 async def test_post_passes_validated_source_choice_without_running_graph(
-    monkeypatch, selected
+    monkeypatch, selected, response_language
 ):
     app = FastAPI()
     app.include_router(routes.router)
@@ -161,6 +178,7 @@ async def test_post_passes_validated_source_choice_without_running_graph(
             repository="encode/httpx",
             issue_number=123,
             source_index_id=selected,
+            response_language=response_language or "en",
         )
     )
     monkeypatch.setattr(routes, "create_investigation_submission", submission)
@@ -173,6 +191,11 @@ async def test_post_passes_validated_source_choice_without_running_graph(
                 "repository": "encode/httpx",
                 "issue_number": 123,
                 "source_index_id": selected,
+                **(
+                    {}
+                    if response_language is None
+                    else {"response_language": response_language}
+                ),
             },
         )
     assert response.status_code == 202
@@ -182,6 +205,7 @@ async def test_post_passes_validated_source_choice_without_running_graph(
         issue_number=123,
         source_index_id=INDEX_ID if selected else None,
         knowledge_budget_profile="standard",
+        response_language=response_language or "en",
     )
 
 

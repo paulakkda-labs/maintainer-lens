@@ -45,6 +45,7 @@ class CreateInvestigationRequest(InvestigationIdentity):
     """HTTP submission options; the backend snapshots the selected profile."""
 
     knowledge_budget_profile: KnowledgeBudgetProfile = "standard"
+    response_language: ResponseLanguage = "en"
 
 
 class InvestigationInput(InvestigationIdentity):

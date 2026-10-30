@@ -12,6 +12,7 @@ from maintainer_lens.core.config import get_settings
 from maintainer_lens.db.engine import create_db_engine
 from maintainer_lens.db.session import create_session_factory
 from maintainer_lens.messaging.topology import declare_investigation_topology
+from maintainer_lens.web import configure_web
 
 
 @asynccontextmanager
@@ -48,3 +49,4 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(title="MaintainerLens", lifespan=lifespan)
 
 app.include_router(api_router)
+configure_web(app)

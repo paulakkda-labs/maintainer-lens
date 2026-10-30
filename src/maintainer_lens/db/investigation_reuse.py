@@ -12,12 +12,19 @@ from maintainer_lens.db.models.investigation import InvestigationTask
 from maintainer_lens.db.models.investigation_reuse import InvestigationUrlLookup
 
 
-def url_intent_key(repository: str, issue_number: int, budget: dict) -> str:
+def url_intent_key(
+    repository: str, issue_number: int, budget: dict, *, response_language: str = "zh"
+) -> str:
+    if response_language not in ("zh", "en"):
+        raise ValueError("Unsupported response language")
     payload = {
         "repository": repository.casefold(),
         "issue_number": issue_number,
         "budget": budget,
     }
+    # Keep historical Chinese anchors and report reuse intact after the migration.
+    if response_language != "zh":
+        payload["response_language"] = response_language
     return hashlib.sha256(
         json.dumps(
             payload, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -30,8 +37,17 @@ class InvestigationUrlStore:
         self.session_factory = session_factory
 
     @asynccontextmanager
-    async def locked(self, repository: str, issue_number: int, budget: dict):
-        key = url_intent_key(repository, issue_number, budget)
+    async def locked(
+        self,
+        repository: str,
+        issue_number: int,
+        budget: dict,
+        *,
+        response_language: str = "zh",
+    ):
+        key = url_intent_key(
+            repository, issue_number, budget, response_language=response_language
+        )
         async with self.session_factory() as session, session.begin():
             await session.execute(
                 insert(InvestigationUrlLookup)
@@ -70,6 +86,7 @@ class InvestigationUrlStore:
                         func.lower(InvestigationTask.repository)
                         == repository.casefold(),
                         InvestigationTask.issue_number == issue_number,
+                        InvestigationTask.response_language == response_language,
                         InvestigationTask.auto_prepare_knowledge.is_(True),
                         InvestigationTask.knowledge_budget == budget,
                     )
@@ -84,6 +101,7 @@ class InvestigationUrlStore:
             if task is not None and (
                 task.repository.casefold() != repository.casefold()
                 or task.issue_number != issue_number
+                or task.response_language != response_language
                 or not task.auto_prepare_knowledge
                 or task.knowledge_budget != budget
             ):

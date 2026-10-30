@@ -24,7 +24,10 @@ from maintainer_lens.db.investigation_checkpoints import (
     InvestigationCheckpointStore,
 )
 from maintainer_lens.db.investigation_results import upsert_investigation_result
-from maintainer_lens.db.investigation_tasks import claim_investigation_task
+from maintainer_lens.db.investigation_tasks import (
+    claim_investigation_task,
+    create_investigation_task,
+)
 from maintainer_lens.db.models.investigation import InvestigationTask
 from maintainer_lens.db.models.investigation_checkpoint import (
     InvestigationCheckpoint,
@@ -104,9 +107,16 @@ def _thread(task_id, checkpoint_id=None):
 
 
 @pytest.fixture
-async def owned(investigation_task):
-    factory, task_id, engine = investigation_task
+async def owned(session_factory, task_id, db_engine):
+    factory, engine = session_factory, db_engine
     async with factory() as session, session.begin():
+        await create_investigation_task(
+            session,
+            task_id=task_id,
+            repository="fastapi/fastapi",
+            issue_number=123,
+            response_language=_input().response_language,
+        )
         token = await claim_investigation_task(session, task_id)
     assert token
     store = InvestigationCheckpointStore(factory, task_id=task_id, claim_token=token)

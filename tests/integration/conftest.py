@@ -66,5 +66,6 @@ async def investigation_task(
                 task_id=task_id,
                 repository="fastapi/fastapi",
                 issue_number=123,
+                response_language="zh",
             )
     return session_factory, task_id, db_engine

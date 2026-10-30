@@ -150,6 +150,7 @@ def _record(payload=None, *, task_id="task-001", version=1):
 def _task(status="succeeded", *, task_id="task-001"):
     return InvestigationTask(
         id=task_id,
+        response_language="zh",
         repository="fastapi/fastapi",
         issue_number=123,
         status=status,
@@ -195,6 +196,7 @@ async def test_http_returns_complete_typed_result(monkeypatch, needs_more, empty
     report = body.pop("report_markdown")
     assert body == {
         "task_id": "task-001",
+        "response_language": "zh",
         "repository": "fastapi/fastapi",
         "issue_number": 123,
         "status": "succeeded",
@@ -482,6 +484,7 @@ async def test_postgres_task_without_artifacts_is_readable(investigation_task):
     assert response.status_code == 200
     assert response.json() == {
         "task_id": task_id,
+        "response_language": "zh",
         "repository": "fastapi/fastapi",
         "issue_number": 123,
         "status": "pending",

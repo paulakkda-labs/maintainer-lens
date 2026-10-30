@@ -156,11 +156,22 @@ def offline(monkeypatch):
     requests = []
     snapshots = []
     results = []
+    identity_languages = []
 
-    async def identity(session, *, task_id, claim_token):
+    async def identity(
+        session,
+        *,
+        task_id,
+        claim_token,
+        auto_prepare_knowledge=False,
+        response_language="zh",
+    ):
         assert db.transactions == 1
         assert task_id == "task-001"
         assert claim_token == "token-001"
+        assert auto_prepare_knowledge is False
+        assert response_language in ("en", "zh")
+        identity_languages.append(response_language)
         return REPOSITORY, 123, None
 
     async def snapshot(session, **kwargs):
@@ -196,6 +207,7 @@ def offline(monkeypatch):
         snapshots=snapshots,
         results=results,
         identity=read_identity,
+        identity_languages=identity_languages,
         snapshot=write_snapshot,
         result=write_result,
         transport=httpx.MockTransport(transport),
@@ -273,6 +285,18 @@ async def test_issue_service_returns_data_only_after_its_commit(offline):
     assert snapshot is h.snapshots[0]
     assert h.db.commits == [1]
     assert h.db.open_sessions == h.db.transactions == 0
+
+
+@pytest.mark.parametrize("language", ["en", "zh"])
+async def test_preflight_and_graph_result_keep_the_requested_language(
+    offline, language
+):
+    async with httpx.AsyncClient(transport=offline.transport) as client:
+        await _invoke(offline.db, client, response_language=language)
+    assert offline.identity_languages == [language]
+    assert offline.results[0].response_language == language
+    assert offline.db.commits == [1, 2, 3]
+    assert offline.db.open_sessions == offline.db.transactions == 0
 
 
 @pytest.mark.parametrize(
@@ -512,12 +536,24 @@ async def _rows(factory, task_id):
         )
 
 
+@pytest.fixture
+async def english_task(investigation_task):
+    factory, task_id, _ = investigation_task
+    async with factory() as session, session.begin():
+        await session.execute(
+            update(InvestigationTask)
+            .where(InvestigationTask.id == task_id)
+            .values(response_language="en")
+        )
+    return investigation_task
+
+
 @requires_postgres
 @pytest.mark.parametrize("outcome", ["ready", "insufficient", "empty"])
 async def test_real_runner_completes_only_after_snapshot_and_result_are_committed(
-    investigation_task, outcome
+    english_task, outcome
 ):
-    factory, task_id, _ = investigation_task
+    factory, task_id, _ = english_task
     history = AsyncMock(return_value=() if outcome == "empty" else (_history_hit(),))
     analyzer = AsyncMock(return_value=_analysis(needs_more=outcome == "insufficient"))
     observed = []
@@ -602,9 +638,9 @@ async def test_claim_identity_reader_uses_database_state_and_time(
 
 @requires_postgres
 async def test_real_identity_mismatch_is_permanent_without_external_calls(
-    investigation_task,
+    english_task,
 ):
-    factory, task_id, _ = investigation_task
+    factory, task_id, _ = english_task
     requests = []
 
     def forbidden(request):
@@ -637,10 +673,8 @@ async def test_real_identity_mismatch_is_permanent_without_external_calls(
         "result_commit",
     ],
 )
-async def test_real_runner_failure_never_marks_success(
-    investigation_task, monkeypatch, kind
-):
-    factory, task_id, _ = investigation_task
+async def test_real_runner_failure_never_marks_success(english_task, monkeypatch, kind):
+    factory, task_id, _ = english_task
     real_writer = processor_module.upsert_investigation_result
     commit_target = factory.class_.sync_session_class
     error = RuntimeError("Result persistence failed")
@@ -704,8 +738,8 @@ async def test_real_runner_failure_never_marks_success(
 
 
 @requires_postgres
-async def test_replacement_claim_survives_result_write_rejection(investigation_task):
-    factory, task_id, _ = investigation_task
+async def test_replacement_claim_survives_result_write_rejection(english_task):
+    factory, task_id, _ = english_task
     new_token = "replacement-owner"
 
     async def history(repository, query):
@@ -745,9 +779,9 @@ async def test_replacement_claim_survives_result_write_rejection(investigation_t
 @requires_postgres
 @pytest.mark.parametrize("cancel_source", ["external", "heartbeat"])
 async def test_real_runner_cancellation_cleans_graph_without_completing(
-    investigation_task, monkeypatch, cancel_source
+    english_task, monkeypatch, cancel_source
 ):
-    factory, task_id, _ = investigation_task
+    factory, task_id, _ = english_task
     started = asyncio.Event()
     cleaned = asyncio.Event()
 

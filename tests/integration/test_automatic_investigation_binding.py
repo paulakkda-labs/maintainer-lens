@@ -52,13 +52,14 @@ def anyio_backend():
     return "asyncio"
 
 
-async def _task(factory, task_id):
+async def _task(factory, task_id, *, response_language="en"):
     async with factory() as session, session.begin():
         session.add(
             InvestigationTask(
                 id=task_id,
                 repository=REPOSITORY,
                 issue_number=123,
+                response_language=response_language,
                 auto_prepare_knowledge=True,
                 knowledge_budget=make_knowledge_preparation_budget(
                     "small"
@@ -82,14 +83,14 @@ async def _bind(factory, task_id, token, index_id, **changes):
         )
 
 
-async def _result(index_id):
+async def _result(index_id, *, response_language="en"):
     return await execute_graph_investigation(
         InvestigationInput(
             repository=REPOSITORY,
             issue_number=123,
             issue_title="Cleanup",
             issue_body=None,
-            response_language="zh",
+            response_language=response_language,
             source_index_id=index_id,
         ),
         history_searcher=AsyncMock(return_value=()),
@@ -123,20 +124,36 @@ async def test_auto_submission_persists_only_backend_owned_preparation_fields(
     )
 
 
+@pytest.mark.parametrize("response_language", ["en", "zh"])
 async def test_auto_mode_preflight_and_stored_budget_are_authoritative(
-    session_factory, task_id
+    session_factory, task_id, response_language
 ):
-    token = await _task(session_factory, task_id)
+    token = await _task(session_factory, task_id, response_language=response_language)
     async with session_factory() as session, session.begin():
         assert (
             await get_claimed_investigation_identity(
-                session, task_id=task_id, claim_token=token
+                session,
+                task_id=task_id,
+                claim_token=token,
+                response_language=response_language,
             )
             is None
         )
         assert await get_claimed_investigation_identity(
-            session, task_id=task_id, claim_token=token, auto_prepare_knowledge=True
+            session,
+            task_id=task_id,
+            claim_token=token,
+            auto_prepare_knowledge=True,
+            response_language=response_language,
         ) == (REPOSITORY, 123, None)
+        with pytest.raises(ValueError, match="message language differs"):
+            await get_claimed_investigation_identity(
+                session,
+                task_id=task_id,
+                claim_token=token,
+                auto_prepare_knowledge=True,
+                response_language="zh" if response_language == "en" else "en",
+            )
         context = await get_claimed_knowledge_preparation(
             session, task_id=task_id, claim_token=token
         )
@@ -234,12 +251,14 @@ async def test_expiry_while_waiting_for_task_lock_cannot_bind(session_factory, t
                 await operation
 
 
+@pytest.mark.parametrize("response_language", ["en", "zh"])
 async def test_effective_index_fences_result_and_is_returned_by_get(
-    session_factory, task_id
+    session_factory, task_id, response_language
 ):
-    token, index_id = await _task(session_factory, task_id), uuid4()
+    token = await _task(session_factory, task_id, response_language=response_language)
+    index_id = uuid4()
     assert await _bind(session_factory, task_id, token, index_id)
-    result = await _result(index_id)
+    result = await _result(index_id, response_language=response_language)
     async with session_factory() as session, session.begin():
         assert await upsert_investigation_result(
             session, task_id=task_id, claim_token=token, result=result
@@ -249,6 +268,14 @@ async def test_effective_index_fences_result_and_is_returned_by_get(
         async with session_factory() as session, session.begin():
             await upsert_investigation_result(
                 session, task_id=task_id, claim_token=token, result=foreign
+            )
+    foreign_language = result.model_copy(
+        update={"response_language": "zh" if response_language == "en" else "en"}
+    )
+    with pytest.raises(InvalidInvestigationResultError, match="identity"):
+        async with session_factory() as session, session.begin():
+            await upsert_investigation_result(
+                session, task_id=task_id, claim_token=token, result=foreign_language
             )
     async with session_factory() as session, session.begin():
         await session.execute(
@@ -265,6 +292,11 @@ async def test_effective_index_fences_result_and_is_returned_by_get(
         response = await client.get(f"/investigations/{task_id}")
     assert response.status_code == 200
     body = response.json()
+    assert (
+        body["response_language"]
+        == body["result"]["response_language"]
+        == response_language
+    )
     assert body["source_index_id"] is None and body["auto_prepare_knowledge"]
     assert (
         body["prepared_source_index_id"]

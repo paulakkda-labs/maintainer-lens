@@ -142,6 +142,8 @@ async def process_graph_investigation(
             mode_options = (
                 {"auto_prepare_knowledge": True} if auto_prepare_knowledge else {}
             )
+            if response_language != "zh":
+                mode_options["response_language"] = response_language
             identity = await get_claimed_investigation_identity(
                 session, task_id=task_id, claim_token=claim_token, **mode_options
             )

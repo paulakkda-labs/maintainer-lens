@@ -331,7 +331,12 @@ deferred; it is not required for the URL-to-report V1 workflow.
 - [ ] Representative, multi-source Issue+PR/source retrieval and Agent report evaluation, regression metrics and limits.
 - [ ] Observability, task retries/lease recovery, security reviews, API safety boundaries and cost monitoring.
 - [ ] Reproducible deployment instructions, migrations, env documentation and safe production defaults.
-- [ ] Small Web UI: submit public Issue URL, view progress, citations, report, and applicable human review actions.
+- [x] Supply initial English/Chinese Web investigation and records pages with
+  progress, safe Markdown preview/download, retained workspaces and existing
+  eligible review actions. Local build and seven mocked browser tests passed;
+  the maintainer applied the language migration.
+- [ ] Accept Web/backend language regressions and manually try deployed Issues;
+  mock browser success is not real-provider report-quality acceptance.
 - [ ] Public English docs, `README.zh-CN.md`, runnable demo and Apache-2.0 compliance.
 
 ## V2 — Private repository support — Future

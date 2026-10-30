@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, HttpUrl
 
+from maintainer_lens.agents.investigation_analysis import ResponseLanguage
 from maintainer_lens.schemas.investigation_budget import KnowledgePreparationBudget
 from maintainer_lens.schemas.investigation_contracts import (
     CreateInvestigationRequest as CreateInvestigationRequest,
@@ -37,6 +38,7 @@ class InvestigationTaskSummary(BaseModel):
     """An existing task locator; details/events remain separate read endpoints."""
 
     task_id: str
+    response_language: ResponseLanguage = "en"
     status: InvestigationStatus
     generation: int
     created_at: datetime
@@ -68,6 +70,7 @@ class InvestigationDetailResponse(BaseModel):
     """Task status, available snapshot and optional completed Graph result."""
 
     task_id: str
+    response_language: ResponseLanguage = "en"
     repository: str
     issue_number: int
     source_index_id: UUID | None = None

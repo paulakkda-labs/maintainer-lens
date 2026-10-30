@@ -1120,6 +1120,19 @@ Creating a workflow file locally does not establish that CI is passing: it must
 actually run on GitHub after pushing the feature branch. This CI does not
 replace the local Compose/full GitHub API smoke test.
 
+## Web interface
+
+Open `http://127.0.0.1:8000/` to investigate an Issue and `/logs` to find saved
+tasks/events by Task ID or Issue URL. The interface defaults to English and
+supports Chinese, live phases, Markdown preview/download, independently retained
+workspaces and existing on-demand review actions.
+
+This slice requires migration `3cd7a9b1e528` and a rebuilt application image.
+New public submissions default to English; existing tasks retain their language.
+Select Chinese or pass `response_language: "zh"` when needed. Changing the UI
+language does not automatically regenerate a report. See
+[upgrade, operation and acceptance](docs/WEB_INTERFACE.md).
+
 ## Try a real GitHub issue
 
 1. Apply existing migrations, configure the existing provider settings, and start

@@ -76,6 +76,7 @@ async def test_create_investigation_returns_202(
         issue_number=3712,
         source_index_id=None,
         knowledge_budget_profile="standard",
+        response_language="en",
     )
 
 
@@ -122,6 +123,7 @@ async def test_get_pending_investigation_without_snapshot(
     assert response.json() == {
         "task_id": "task-001",
         "repository": "encode/httpx",
+        "response_language": "zh",
         "issue_number": 3712,
         "status": "pending",
         "issue": None,

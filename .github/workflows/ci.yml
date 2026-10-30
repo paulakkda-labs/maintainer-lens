@@ -48,6 +48,33 @@ jobs:
       - name: Build wheel and source distribution
         run: uv build --out-dir dist
 
+  web:
+    name: Web build and offline browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check frontend formatting
+        run: npm run format:check
+      - name: Type-check and build
+        run: npm run build
+      - name: Install test browser
+        run: npm exec -- playwright install --with-deps chromium
+      - name: Offline browser acceptance
+        run: npm test
+
   integration:
     name: Database, broker, and startup integration
     runs-on: ubuntu-latest

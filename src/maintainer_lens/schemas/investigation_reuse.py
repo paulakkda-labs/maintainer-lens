@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from maintainer_lens.agents.investigation_analysis import ResponseLanguage
+
 type FreshnessStatus = Literal["not_checked", "checking", "current", "stale", "unknown"]
 
 
@@ -24,6 +26,7 @@ class ResolveInvestigationResponse(BaseModel):
     """The selected task and, when available, an explicitly identified old report."""
 
     task_id: str
+    response_language: ResponseLanguage = "en"
     status: Literal["pending", "running", "succeeded", "failed", "waiting_review"]
     decision: Literal[
         "created",

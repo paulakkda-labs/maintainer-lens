@@ -121,6 +121,7 @@ def test_http_request_retains_existing_coercion_and_extra_field_policy() -> None
         "issue_number": 12,
         "source_index_id": None,
         "knowledge_budget_profile": "standard",
+        "response_language": "en",
     }
 
 

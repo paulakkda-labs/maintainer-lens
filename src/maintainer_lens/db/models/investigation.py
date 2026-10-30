@@ -38,6 +38,9 @@ class InvestigationTask(Base):
     issue_number: Mapped[int] = mapped_column(
         nullable=False,
     )
+    response_language: Mapped[str] = mapped_column(
+        String(2), nullable=False, server_default=text("'en'"), default="en"
+    )
     execution_generation: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
@@ -105,6 +108,9 @@ class InvestigationTask(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "response_language IN ('zh', 'en')", name="ck_tasks_response_language"
+        ),
         CheckConstraint(
             "user_recovery_count BETWEEN 0 AND 3", name="ck_tasks_user_recovery_count"
         ),

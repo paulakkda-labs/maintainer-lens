@@ -4,6 +4,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from maintainer_lens.agents.investigation_analysis import ResponseLanguage
 from maintainer_lens.schemas.investigation_budget import KnowledgeBudgetProfile
 from maintainer_lens.schemas.investigation_contracts import InvestigationIdentity
 
@@ -25,6 +26,7 @@ class CreateInvestigationFromUrlRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     issue_url: str
+    response_language: ResponseLanguage = "en"
     knowledge_budget_profile: KnowledgeBudgetProfile = "standard"
 
     @field_validator("issue_url")
